@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Answer Sheet Scanner</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <div class="header-content">
+                <div class="header-title">
+                    <h1>Answer Sheet Scanner</h1>
+                </div>
+                <div class="header-actions">
+                    <button id="btn-complete" class="btn btn-success" disabled>
+                        <span class="btn-icon">💾</span>
+                        Generate PDF
+                    </button>
+                    <button id="btn-view-pdfs" class="btn btn-secondary">
+                        <span class="btn-icon">📄</span>
+                        View PDFs
+                    </button>
+                </div>
+            </div>
+        </header>
+
+        <div class="main-content">
+            <!-- Tabs -->
+            <div class="tabs">
+                <button class="tab-btn active" data-tab="scanning">Scan & Edit</button>
+                <button class="tab-btn" data-tab="pdfs">PDF Gallery</button>
+                <button class="tab-btn" data-tab="settings">Settings</button>
+            </div>
+
+            <!-- Scanning & Editing Tab -->
+            <div id="tab-scanning" class="tab-content active">
+                <div class="workspace">
+                    <!-- Image Editor Section -->
+                    <div class="editor-section">
+                        <!-- Editor Controls - Compact and User-Friendly -->
+                        <div id="editor-controls" class="editor-controls" style="display: none;">
+                            <div class="controls-compact">
+                                <div class="control-item">
+                                    <button id="btn-rotate-90" class="btn-control" title="Rotate 90°">
+                                        <span class="control-icon">↻</span>
+                                        <span class="control-label">90°</span>
+                                    </button>
+                                    <button id="btn-rotate-180" class="btn-control" title="Rotate 180°">
+                                        <span class="control-icon">↻↻</span>
+                                        <span class="control-label">180°</span>
+                                    </button>
+                                    <div class="slider-inline">
+                                        <span class="control-icon-small">🔄</span>
+                                        <input type="range" id="rotate-slider" min="-180" max="180" value="0" step="1" class="slider-compact">
+                                        <span id="rotate-value" class="value-display">0°</span>
+                                    </div>
+                                </div>
+                                
+                                <div class="control-item">
+                                    <span class="control-icon-small">☀️</span>
+                                    <input type="range" id="brightness-slider" min="0" max="200" value="100" step="1" class="slider-compact">
+                                    <span id="brightness-value" class="value-display">100%</span>
+                                </div>
+                                
+                                <div class="control-item">
+                                    <span class="control-icon-small">🎨</span>
+                                    <input type="range" id="contrast-slider" min="0" max="200" value="100" step="1" class="slider-compact">
+                                    <span id="contrast-value" class="value-display">100%</span>
+                                </div>
+                                
+                                <div class="control-item">
+                                    <button id="btn-crop-toggle" class="btn-control" title="Enable crop tool">
+                                        <span class="control-icon">✂️</span>
+                                        <span class="control-label">Crop</span>
+                                    </button>
+                                    <button id="btn-crop-clear" class="btn-control-small" title="Clear crop" style="display: none;">
+                                        <span>✕</span> Clear
+                                    </button>
+                                </div>
+                                
+                                <div class="control-actions">
+                                    <button id="btn-reset-edits" class="btn-control-small" title="Reset all edits">
+                                        <span>↺</span> Reset
+                                    </button>
+                                    <button id="btn-apply-edits" class="btn-control-small btn-primary" title="Apply edits">
+                                        <span>✓</span> Apply
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <!-- Preview and Gallery Layout -->
+                        <div class="preview-layout">
+                            <div class="preview-container">
+                                <div id="editor-container" class="editor-container">
+                                    <div class="empty-state">
+                                        <div class="empty-icon">📷</div>
+                                        <p>No image to preview</p>
+                                        <p class="hint">Select an image from the gallery</p>
+                                    </div>
+                                    <!-- Crop overlay -->
+                                    <div id="crop-overlay" class="crop-overlay" style="display: none;">
+                                        <div id="crop-selection" class="crop-selection"></div>
+                                    </div>
+                                </div>
+                            </div>
+                            
+                            <!-- Scanned Images Gallery - Right Side -->
+                            <div class="gallery-sidebar">
+                                <div class="section-header-small">
+                                    <h3>Scanned Images</h3>
+                                    <span class="image-count-badge" id="image-count-badge">0</span>
+                                </div>
+                                <div id="scanned-gallery" class="scanned-gallery">
+                                    <div class="empty-state-small">
+                                        <p>No images found</p>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- PDF Gallery Tab -->
+            <div id="tab-pdfs" class="tab-content">
+                <div class="pdf-workspace">
+                    <div class="section-header">
+                        <h2>Generated PDFs</h2>
+                        <p class="section-hint">View and manage your PDF documents</p>
+                    </div>
+                    <div class="pdf-container">
+                        <div id="pdf-gallery" class="pdf-gallery">
+                            <div class="empty-state-small">
+                                <p>No PDFs generated yet</p>
+                            </div>
+                        </div>
+                        <div id="pdf-preview" class="pdf-preview" style="display: none;">
+                            <div class="pdf-preview-header">
+                                <h3 id="pdf-preview-title"></h3>
+                                <button id="btn-close-preview" class="btn-close">×</button>
+                            </div>
+                            <iframe id="pdf-preview-frame" class="pdf-preview-frame"></iframe>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Settings Tab -->
+            <div id="tab-settings" class="tab-content">
+                <div class="settings-workspace">
+                    <div class="section-header">
+                        <h2>Settings</h2>
+                        <p class="section-hint">Configure application paths and preferences</p>
+                    </div>
+                    <div class="settings-container">
+                        <div class="settings-section">
+                            <h3>Output Directory</h3>
+                            <p class="settings-description">Choose where generated PDFs will be saved</p>
+                            <div class="path-input-group">
+                                <input type="text" id="output-path-input" class="path-input" readonly>
+                                <button id="btn-browse-output" class="btn btn-primary">Browse</button>
+                            </div>
+                            <p class="path-display" id="output-path-display"></p>
+                        </div>
+                        
+                        <div class="settings-section">
+                            <h3>Scanner Input Folder</h3>
+                            <p class="settings-description">Folder to watch for scanned images (auto-import)</p>
+                            <div class="path-input-group">
+                                <input type="text" id="scanner-path-input" class="path-input" readonly>
+                                <button id="btn-browse-scanner" class="btn btn-primary">Browse</button>
+                            </div>
+                            <p class="path-display" id="scanner-path-display"></p>
+                        </div>
+                        
+                        <div class="settings-actions">
+                            <button id="btn-save-settings" class="btn btn-success">
+                                <span class="btn-icon">💾</span>
+                                Save Settings
+                            </button>
+                            <button id="btn-reset-settings" class="btn btn-outline">
+                                <span class="btn-icon">↺</span>
+                                Reset to Default
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Messages/Notifications -->
+        <div id="message-container" class="message-container"></div>
+    </div>
+
+    <script src="renderer.js"></script>
+</body>
+</html>

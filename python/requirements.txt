@@ -1,0 +1,8 @@
+opencv-python
+Pillow
+imagehash
+reportlab
+flask
+flask-cors
+numpy
+watchdog
