@@ -619,6 +619,50 @@ def list_scanner_images():
     })
 
 
+@app.route('/delete_scanner_image', methods=['POST'])
+def delete_scanner_image():
+    """Delete a single image from scanner_input folder."""
+    data = request.get_json()
+    image_path = data.get('path')
+    
+    if not image_path:
+        return jsonify({
+            'success': False,
+            'error': 'Image path is required'
+        }), 400
+    
+    # Validate that the path is within the scanner directory for security
+    scanner_dir_abs = os.path.abspath(SCANNER_WATCH_DIR)
+    image_path_abs = os.path.abspath(image_path)
+    
+    # Check if the image path is within the scanner directory
+    if not image_path_abs.startswith(scanner_dir_abs):
+        return jsonify({
+            'success': False,
+            'error': 'Invalid image path - must be within scanner folder'
+        }), 400
+    
+    # Check if file exists
+    if not os.path.exists(image_path_abs):
+        return jsonify({
+            'success': False,
+            'error': 'Image file not found'
+        }), 404
+    
+    try:
+        # Delete the file
+        os.remove(image_path_abs)
+        return jsonify({
+            'success': True,
+            'message': 'Image deleted successfully'
+        })
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': f'Failed to delete image: {str(e)}'
+        }), 500
+
+
 @app.route('/list_pdfs', methods=['GET'])
 def list_pdfs():
     """List all generated PDFs."""

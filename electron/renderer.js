@@ -217,7 +217,7 @@ function updateScannedGallery() {
     }
     
     if (scannedImages.length === 0) {
-        scannedGallery.innerHTML = '<div class="empty-state-small"><p>No images found in scanner_input folder</p></div>';
+        scannedGallery.innerHTML = '<div class="empty-state-small"><p>No image found</p></div>';
         return;
     }
     
@@ -227,6 +227,9 @@ function updateScannedGallery() {
             <img src="file://${img.path.replace(/\\/g, '/')}" alt="${img.filename}" 
                  onerror="this.src='data:image/svg+xml,%3Csvg xmlns=\\'http://www.w3.org/2000/svg\\' width=\\'200\\' height=\\'150\\'%3E%3Crect fill=\\'%23ddd\\' width=\\'200\\' height=\\'150\\'/%3E%3Ctext x=\\'50%25\\' y=\\'50%25\\' text-anchor=\\'middle\\' dy=\\'.3em\\' fill=\\'%23999\\'%3EImage%3C/text%3E%3C/svg%3E'">
             <div class="scanned-gallery-item-info">${img.filename}</div>
+            <button class="scanned-gallery-item-delete" onclick="event.stopPropagation(); deleteScannedImage(${index})" title="Delete image">
+                ×
+            </button>
         </div>
     `).join('');
 }
@@ -237,6 +240,52 @@ async function selectScannedImage(index) {
     selectedImageIndex = index;
     await loadImageForPreview(scannedImages[index].path);
     updateScannedGallery();
+}
+
+async function deleteScannedImage(index) {
+    if (index < 0 || index >= scannedImages.length) return;
+    
+    const imageToDelete = scannedImages[index];
+    
+    // Confirm deletion
+    if (!confirm(`Are you sure you want to delete "${imageToDelete.filename}"?`)) {
+        return;
+    }
+    
+    try {
+        const response = await fetch(`${API_URL}/delete_scanner_image`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                path: imageToDelete.path
+            })
+        });
+        
+        const data = await response.json();
+        
+        if (data.success) {
+            showMessage(`Image "${imageToDelete.filename}" deleted successfully`, 'success');
+            
+            // If the deleted image was currently selected, clear the preview
+            if (selectedImageIndex === index) {
+                clearImagePreview();
+                selectedImageIndex = -1;
+            } else if (selectedImageIndex > index) {
+                // Adjust selected index if a previous image was deleted
+                selectedImageIndex--;
+            }
+            
+            // Reload scanned images to update the list
+            await loadScannedImages();
+        } else {
+            showMessage(data.error || 'Failed to delete image', 'error');
+        }
+    } catch (error) {
+        console.error('Error deleting image:', error);
+        showMessage(`Error deleting image: ${error.message}`, 'error');
+    }
 }
 
 async function loadImageForPreview(imagePath) {
@@ -1170,6 +1219,7 @@ async function resetSettings() {
 
 // Make functions available globally
 window.selectScannedImage = selectScannedImage;
+window.deleteScannedImage = deleteScannedImage;
 window.openPDF = openPDF;
 window.closePDFPreview = closePDFPreview;
 

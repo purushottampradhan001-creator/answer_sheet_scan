@@ -197,6 +197,38 @@ header h1 {
     -webkit-box-orient: vertical;
 }
 
+.scanned-gallery-item-delete {
+    position: absolute;
+    top: 4px;
+    right: 4px;
+    width: 24px;
+    height: 24px;
+    border-radius: 50%;
+    background: rgba(239, 68, 68, 0.9);
+    color: white;
+    border: none;
+    cursor: pointer;
+    font-size: 18px;
+    line-height: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    opacity: 0;
+    transition: opacity 0.2s ease, background 0.2s ease;
+    z-index: 10;
+    padding: 0;
+    font-weight: bold;
+}
+
+.scanned-gallery-item:hover .scanned-gallery-item-delete {
+    opacity: 1;
+}
+
+.scanned-gallery-item-delete:hover {
+    background: rgba(220, 38, 38, 1);
+    transform: scale(1.1);
+}
+
 .btn {
     padding: 10px 20px;
     font-size: 0.9375rem;
