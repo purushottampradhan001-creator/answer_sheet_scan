@@ -44,6 +44,13 @@ let currentEditingCanvas = null;
 let currentEditingCtx = null;
 let originalImage = null;
 let scannerPollInterval = null;
+let examDetails = {
+    degree: null,
+    subject: null,
+    exam_date: null,
+    college: null,
+    unique_id: null
+};
 let cropState = {
     enabled: false,
     startX: 0,
@@ -176,6 +183,32 @@ async function init() {
     
     // Load PDFs
     loadPDFs();
+    
+    // Exam details modal handlers
+    const examModal = document.getElementById('exam-details-modal');
+    const btnCloseExamModal = document.getElementById('btn-close-exam-modal');
+    const btnCancelExam = document.getElementById('btn-cancel-exam');
+    const btnSaveExamDetails = document.getElementById('btn-save-exam-details');
+    const examDetailsForm = document.getElementById('exam-details-form');
+    
+    if (btnCloseExamModal) {
+        btnCloseExamModal.addEventListener('click', closeExamModal);
+    }
+    if (btnCancelExam) {
+        btnCancelExam.addEventListener('click', closeExamModal);
+    }
+    if (btnSaveExamDetails) {
+        btnSaveExamDetails.addEventListener('click', saveExamDetails);
+    }
+    
+    // Close modal when clicking outside
+    if (examModal) {
+        examModal.addEventListener('click', (e) => {
+            if (e.target === examModal) {
+                closeExamModal();
+            }
+        });
+    }
 }
 
 async function loadScannedImages() {
@@ -702,6 +735,7 @@ async function autoStartAnswerCopy() {
         if (statusData.active) {
             currentAnswerCopyId = statusData.answer_copy_id;
             currentImages = statusData.images || [];
+            examDetails = statusData.exam_details || examDetails;
             updateUI();
             return true;
         }
@@ -719,7 +753,19 @@ async function autoStartAnswerCopy() {
         if (data.success) {
             currentAnswerCopyId = data.answer_copy_id;
             currentImages = [];
+            // Keep existing exam details if they exist, otherwise reset
+            if (!examDetails || (!examDetails.degree && !examDetails.subject && !examDetails.exam_date && !examDetails.college)) {
+                examDetails = {
+                    degree: null,
+                    subject: null,
+                    exam_date: null,
+                    college: null,
+                    unique_id: null
+                };
+            }
             updateUI();
+            // Show exam details modal with pre-populated values
+            showExamModal();
             return true;
         } else {
             showMessage(data.error || 'Failed to initialize', 'error');
@@ -753,6 +799,30 @@ async function completeAnswerCopy() {
         
         if (!statusData.active) {
             showMessage('No active answer copy. Please start a new one.', 'error');
+            btnComplete.disabled = false;
+            return;
+        }
+        
+        // Check if exam details are set
+        const examDetailsResponse = await fetch(`${API_URL}/get_exam_details`);
+        let examDetailsData = null;
+        try {
+            examDetailsData = await examDetailsResponse.json();
+        } catch (e) {
+            // Exam details endpoint might not exist yet
+        }
+        
+        const hasExamDetails = examDetailsData && examDetailsData.success && 
+            examDetailsData.exam_details && 
+            examDetailsData.exam_details.degree && 
+            examDetailsData.exam_details.subject && 
+            examDetailsData.exam_details.exam_date && 
+            examDetailsData.exam_details.college;
+        
+        if (!hasExamDetails) {
+            // Show exam details modal
+            showMessage('Please provide exam details before generating PDF', 'warning');
+            showExamModal();
             btnComplete.disabled = false;
             return;
         }
@@ -812,6 +882,24 @@ async function completeAnswerCopy() {
                     if (uploadData.success) {
                         uploadedCount++;
                         console.log(`Uploaded: ${scannedImg.filename}`);
+                        
+                        // If this is the first image and unique ID was extracted, update the form
+                        if (uploadData.unique_id_extracted && uploadData.image.sequence === 1) {
+                            // Reload exam details to get the extracted unique ID
+                            const examDetailsResponse = await fetch(`${API_URL}/get_exam_details`);
+                            try {
+                                const examDetailsData = await examDetailsResponse.json();
+                                if (examDetailsData.success && examDetailsData.exam_details.unique_id) {
+                                    const uniqueIdInput = document.getElementById('exam-unique-id');
+                                    if (uniqueIdInput) {
+                                        uniqueIdInput.value = examDetailsData.exam_details.unique_id;
+                                        examDetails.unique_id = examDetailsData.exam_details.unique_id;
+                                    }
+                                }
+                            } catch (e) {
+                                // Ignore errors
+                            }
+                        }
                     } else {
                         failedCount++;
                         console.error(`Failed to upload ${scannedImg.filename}:`, uploadData.error || 'Unknown error');
@@ -1115,6 +1203,31 @@ async function loadSettings() {
             document.getElementById('scanner-path-input').value = scannerData.folder_path;
             document.getElementById('scanner-path-display').textContent = `Current: ${scannerData.folder_path}`;
         }
+        
+        // Load exam details
+        try {
+            const examDetailsResponse = await fetch(`${API_URL}/get_exam_details`);
+            const examDetailsData = await examDetailsResponse.json();
+            
+            if (examDetailsData.success && examDetailsData.exam_details) {
+                const details = examDetailsData.exam_details;
+                document.getElementById('settings-exam-degree').value = details.degree || '';
+                document.getElementById('settings-exam-subject').value = details.subject || '';
+                document.getElementById('settings-exam-date').value = details.exam_date || '';
+                document.getElementById('settings-exam-college').value = details.college || '';
+                document.getElementById('settings-exam-unique-id').value = details.unique_id || '';
+                examDetails = details;
+            }
+        } catch (examError) {
+            // Exam details might not be available if no active answer copy
+            console.log('No exam details available:', examError);
+            // Clear the fields
+            document.getElementById('settings-exam-degree').value = '';
+            document.getElementById('settings-exam-subject').value = '';
+            document.getElementById('settings-exam-date').value = '';
+            document.getElementById('settings-exam-college').value = '';
+            document.getElementById('settings-exam-unique-id').value = '';
+        }
     } catch (error) {
         console.error('Error loading settings:', error);
         showMessage('Failed to load settings', 'error');
@@ -1175,6 +1288,53 @@ async function saveSettings() {
             }
         }
         
+        // Save exam details (if there's an active answer copy)
+        try {
+            const degree = document.getElementById('settings-exam-degree').value.trim();
+            const subject = document.getElementById('settings-exam-subject').value.trim();
+            const examDate = document.getElementById('settings-exam-date').value;
+            const college = document.getElementById('settings-exam-college').value.trim();
+            const uniqueId = document.getElementById('settings-exam-unique-id').value.trim();
+            
+            // Check if there's an active answer copy
+            const statusResponse = await fetch(`${API_URL}/get_current_status`);
+            const statusData = await statusResponse.json();
+            
+            if (statusData.active) {
+                // Only save if at least some fields are filled
+                if (degree || subject || examDate || college || uniqueId) {
+                    const examResponse = await fetch(`${API_URL}/set_exam_details`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            degree: degree || null,
+                            subject: subject || null,
+                            exam_date: examDate || null,
+                            college: college || null,
+                            unique_id: uniqueId || null
+                        })
+                    });
+                    
+                    const examData = await examResponse.json();
+                    if (examData.success) {
+                        examDetails = examData.exam_details;
+                    }
+                }
+            } else {
+                // No active answer copy - just store in local state for next time
+                examDetails = {
+                    degree: degree || null,
+                    subject: subject || null,
+                    exam_date: examDate || null,
+                    college: college || null,
+                    unique_id: uniqueId || null
+                };
+            }
+        } catch (examError) {
+            console.log('Could not save exam details (no active answer copy):', examError);
+            // This is okay - exam details will be saved when answer copy is started
+        }
+        
         showMessage('Settings saved successfully!', 'success');
         // Reload settings to show updated paths
         await loadSettings();
@@ -1214,6 +1374,135 @@ async function resetSettings() {
     } catch (error) {
         console.error('Error resetting settings:', error);
         showMessage('Failed to reset settings', 'error');
+    }
+}
+
+// Exam Details Modal Functions
+function showExamModal() {
+    const examModal = document.getElementById('exam-details-modal');
+    if (!examModal) return;
+    
+    // Load existing exam details if available
+    loadExamDetails().then(() => {
+        examModal.style.display = 'flex';
+    });
+}
+
+function closeExamModal() {
+    const examModal = document.getElementById('exam-details-modal');
+    if (examModal) {
+        examModal.style.display = 'none';
+    }
+}
+
+async function loadExamDetails() {
+    try {
+        const response = await fetch(`${API_URL}/get_exam_details`);
+        const data = await response.json();
+        
+        if (data.success && data.exam_details) {
+            const details = data.exam_details;
+            // Update modal form
+            document.getElementById('exam-degree').value = details.degree || '';
+            document.getElementById('exam-subject').value = details.subject || '';
+            document.getElementById('exam-date').value = details.exam_date || '';
+            document.getElementById('exam-college').value = details.college || '';
+            document.getElementById('exam-unique-id').value = details.unique_id || '';
+            // Update settings tab form
+            document.getElementById('settings-exam-degree').value = details.degree || '';
+            document.getElementById('settings-exam-subject').value = details.subject || '';
+            document.getElementById('settings-exam-date').value = details.exam_date || '';
+            document.getElementById('settings-exam-college').value = details.college || '';
+            document.getElementById('settings-exam-unique-id').value = details.unique_id || '';
+            examDetails = details;
+        } else {
+            // If no exam details from backend, use saved examDetails from settings
+            if (examDetails && (examDetails.degree || examDetails.subject || examDetails.exam_date || examDetails.college)) {
+                document.getElementById('exam-degree').value = examDetails.degree || '';
+                document.getElementById('exam-subject').value = examDetails.subject || '';
+                document.getElementById('exam-date').value = examDetails.exam_date || '';
+                document.getElementById('exam-college').value = examDetails.college || '';
+                document.getElementById('exam-unique-id').value = examDetails.unique_id || '';
+            }
+        }
+    } catch (error) {
+        console.error('Error loading exam details:', error);
+        // If endpoint doesn't exist or error, use saved examDetails from settings
+        if (examDetails && (examDetails.degree || examDetails.subject || examDetails.exam_date || examDetails.college)) {
+            document.getElementById('exam-degree').value = examDetails.degree || '';
+            document.getElementById('exam-subject').value = examDetails.subject || '';
+            document.getElementById('exam-date').value = examDetails.exam_date || '';
+            document.getElementById('exam-college').value = examDetails.college || '';
+            document.getElementById('exam-unique-id').value = examDetails.unique_id || '';
+        } else {
+            // Clear the form
+            document.getElementById('exam-degree').value = '';
+            document.getElementById('exam-subject').value = '';
+            document.getElementById('exam-date').value = '';
+            document.getElementById('exam-college').value = '';
+            document.getElementById('exam-unique-id').value = '';
+        }
+    }
+}
+
+async function saveExamDetails() {
+    const examDetailsForm = document.getElementById('exam-details-form');
+    if (!examDetailsForm || !examDetailsForm.checkValidity()) {
+        examDetailsForm.reportValidity();
+        return;
+    }
+    
+    try {
+        const degree = document.getElementById('exam-degree').value.trim();
+        const subject = document.getElementById('exam-subject').value.trim();
+        const examDate = document.getElementById('exam-date').value;
+        const college = document.getElementById('exam-college').value.trim();
+        const uniqueId = document.getElementById('exam-unique-id').value.trim();
+        
+        if (!degree || !subject || !examDate || !college) {
+            showMessage('Please fill in all required fields', 'error');
+            return;
+        }
+        
+        const response = await fetch(`${API_URL}/set_exam_details`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                degree: degree,
+                subject: subject,
+                exam_date: examDate,
+                college: college,
+                unique_id: uniqueId || null
+            })
+        });
+        
+        const data = await response.json();
+        
+        if (data.success) {
+            examDetails = data.exam_details;
+            // Also update settings tab form
+            document.getElementById('settings-exam-degree').value = examDetails.degree || '';
+            document.getElementById('settings-exam-subject').value = examDetails.subject || '';
+            document.getElementById('settings-exam-date').value = examDetails.exam_date || '';
+            document.getElementById('settings-exam-college').value = examDetails.college || '';
+            document.getElementById('settings-exam-unique-id').value = examDetails.unique_id || '';
+            
+            showMessage('Exam details saved successfully', 'success');
+            closeExamModal();
+            
+            // If user was trying to generate PDF, retry
+            if (btnComplete.disabled && scannedImages.length > 0) {
+                // Re-enable button so user can try again
+                btnComplete.disabled = false;
+            }
+        } else {
+            showMessage(data.error || 'Failed to save exam details', 'error');
+        }
+    } catch (error) {
+        console.error('Error saving exam details:', error);
+        showMessage(`Error saving exam details: ${error.message}`, 'error');
     }
 }
 

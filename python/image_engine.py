@@ -75,7 +75,14 @@ def update_pdf_generator_output_dir(new_dir):
 current_answer_copy = {
     'id': None,
     'images': [],
-    'working_path': None
+    'working_path': None,
+    'exam_details': {
+        'degree': None,
+        'subject': None,
+        'exam_date': None,
+        'college': None,
+        'unique_id': None
+    }
 }
 
 
@@ -203,7 +210,14 @@ def start_answer_copy():
     current_answer_copy = {
         'id': answer_copy_id,
         'images': [],
-        'working_path': working_path
+        'working_path': working_path,
+        'exam_details': {
+            'degree': None,
+            'subject': None,
+            'exam_date': None,
+            'college': None,
+            'unique_id': None
+        }
     }
     
     # Store in database
@@ -295,6 +309,12 @@ def upload_image():
     conn.commit()
     conn.close()
     
+    # If this is the first image and unique_id is not set, extract it
+    if sequence_number == 1 and not current_answer_copy['exam_details'].get('unique_id'):
+        unique_id = extract_unique_id_from_image(final_path)
+        if unique_id:
+            current_answer_copy['exam_details']['unique_id'] = unique_id
+    
     return jsonify({
         'success': True,
         'validation': validation_result,
@@ -303,7 +323,8 @@ def upload_image():
             'sequence': sequence_number,
             'filename': image_filename
         },
-        'total_images': sequence_number
+        'total_images': sequence_number,
+        'unique_id_extracted': sequence_number == 1 and current_answer_copy['exam_details'].get('unique_id') is not None
     })
 
 
@@ -322,7 +343,8 @@ def get_current_status():
         'active': True,
         'answer_copy_id': current_answer_copy['id'],
         'image_count': len(current_answer_copy['images']),
-        'images': current_answer_copy['images']
+        'images': current_answer_copy['images'],
+        'exam_details': current_answer_copy['exam_details']
     })
 
 
@@ -352,10 +374,12 @@ def complete_answer_copy():
             )
         ]
         
-        # Generate PDF
+        # Generate PDF with custom filename
+        exam_details = current_answer_copy.get('exam_details', {})
         pdf_path = pdf_generator.generate_pdf(
             image_paths,
-            current_answer_copy['id']
+            current_answer_copy['id'],
+            exam_details=exam_details
         )
         
         # Update database
@@ -377,7 +401,14 @@ def complete_answer_copy():
         current_answer_copy = {
             'id': None,
             'images': [],
-            'working_path': None
+            'working_path': None,
+            'exam_details': {
+                'degree': None,
+                'subject': None,
+                'exam_date': None,
+                'college': None,
+                'unique_id': None
+            }
         }
         validator.reset()
         
@@ -764,6 +795,133 @@ def apply_image_edits_endpoint():
         }), 500
 
 
+def safe_strip(value):
+    """Safely strip a value, handling None."""
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return value.strip() or None
+    return str(value).strip() or None
+
+
+def generate_unique_id_from_fields(degree, subject, exam_date, college):
+    """Generate unique ID from last 2 characters of each field."""
+    unique_parts = []
+    
+    if degree:
+        # Get last 2 characters, uppercase
+        deg_part = degree[-2:].upper() if len(degree) >= 2 else degree.upper()
+        unique_parts.append(deg_part)
+    
+    if subject:
+        # Get last 2 characters, uppercase
+        subj_part = subject[-2:].upper() if len(subject) >= 2 else subject.upper()
+        unique_parts.append(subj_part)
+    
+    if exam_date:
+        # Get last 2 characters (day)
+        date_part = exam_date[-2:] if len(exam_date) >= 2 else exam_date
+        unique_parts.append(date_part)
+    
+    if college:
+        # Get last 2 characters, uppercase
+        coll_part = college[-2:].upper() if len(college) >= 2 else college.upper()
+        unique_parts.append(coll_part)
+    
+    if unique_parts:
+        return ''.join(unique_parts)
+    return None
+
+
+@app.route('/set_exam_details', methods=['POST'])
+def set_exam_details():
+    """Set exam details for current answer copy."""
+    global current_answer_copy
+    
+    if not current_answer_copy['id']:
+        return jsonify({
+            'success': False,
+            'error': 'No active answer copy. Please start a new one first.'
+        }), 400
+    
+    data = request.get_json()
+    
+    # Safely extract and strip values
+    degree = safe_strip(data.get('degree'))
+    subject = safe_strip(data.get('subject'))
+    exam_date = safe_strip(data.get('exam_date'))
+    college = safe_strip(data.get('college'))
+    unique_id = safe_strip(data.get('unique_id'))
+    
+    # If unique_id is not provided, generate from fields
+    if not unique_id:
+        if degree and subject and exam_date and college:
+            unique_id = generate_unique_id_from_fields(degree, subject, exam_date, college)
+        # If still no unique_id and we have images, try to extract from first page
+        if not unique_id and len(current_answer_copy['images']) > 0:
+            first_image_path = sorted(
+                current_answer_copy['images'],
+                key=lambda x: x['sequence']
+            )[0]['path']
+            extracted_id = extract_unique_id_from_image(first_image_path)
+            if extracted_id:
+                unique_id = extracted_id
+    
+    # Update exam details
+    current_answer_copy['exam_details'] = {
+        'degree': degree,
+        'subject': subject,
+        'exam_date': exam_date,
+        'college': college,
+        'unique_id': unique_id
+    }
+    
+    return jsonify({
+        'success': True,
+        'message': 'Exam details saved',
+        'exam_details': current_answer_copy['exam_details']
+    })
+
+
+@app.route('/get_exam_details', methods=['GET'])
+def get_exam_details():
+    """Get exam details for current answer copy."""
+    global current_answer_copy
+    
+    if not current_answer_copy['id']:
+        return jsonify({
+            'success': False,
+            'error': 'No active answer copy'
+        }), 400
+    
+    return jsonify({
+        'success': True,
+        'exam_details': current_answer_copy['exam_details']
+    })
+
+
+def extract_unique_id_from_image(image_path: str) -> str:
+    """
+    Extract unique ID from first page image.
+    Uses image hash as unique identifier.
+    """
+    try:
+        import imagehash
+        from PIL import Image
+        
+        with Image.open(image_path) as img:
+            # Generate perceptual hash
+            phash = imagehash.phash(img)
+            # Use first 8 characters of hash as unique ID
+            unique_id = str(phash)[:8]
+            return unique_id
+    except Exception as e:
+        print(f"Error extracting unique ID from image: {e}")
+        # Fallback: use timestamp-based ID
+        timestamp = datetime.now().strftime("%H%M%S")
+        return timestamp
+
+
 @app.route('/save_edited_image', methods=['POST'])
 def save_edited_image():
     """Save an edited image (from base64 or file)."""
@@ -917,6 +1075,13 @@ def process_scanner_image(image_path: str):
         
         conn.commit()
         conn.close()
+        
+        # If this is the first image and unique_id is not set, extract it
+        if sequence_number == 1 and not current_answer_copy['exam_details'].get('unique_id'):
+            unique_id = extract_unique_id_from_image(final_path)
+            if unique_id:
+                current_answer_copy['exam_details']['unique_id'] = unique_id
+                print(f"📝 Unique ID extracted from first page: {unique_id}")
         
         print(f"✅ Scanner image processed: {image_filename} (Sequence: {sequence_number})")
         
