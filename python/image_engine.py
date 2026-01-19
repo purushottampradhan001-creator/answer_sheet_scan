@@ -88,11 +88,19 @@ current_answer_copy = {
 
 def load_settings():
     """Load settings from local JSON file."""
-    global OUTPUT_DIR, SCANNER_WATCH_DIR, pdf_generator
+    global OUTPUT_DIR, SCANNER_WATCH_DIR, pdf_generator, current_answer_copy
     
     default_settings = {
         'output_dir': OUTPUT_DIR,
-        'scanner_watch_dir': SCANNER_WATCH_DIR
+        'scanner_watch_dir': SCANNER_WATCH_DIR,
+        'input_dir': SCANNER_WATCH_DIR,  # Alias for scanner_watch_dir
+        'exam_details': {
+            'degree': None,
+            'subject': None,
+            'exam_date': None,
+            'college': None,
+            'unique_id': None
+        }
     }
     
     if os.path.exists(SETTINGS_FILE):
@@ -118,9 +126,32 @@ def load_settings():
                     except Exception as e:
                         print(f"⚠️  Could not use saved scanner_watch_dir: {e}. Using default.")
                 
+                # Handle input_dir (alias for scanner_watch_dir)
+                if 'input_dir' in settings and 'scanner_watch_dir' not in settings:
+                    try:
+                        if not os.path.isdir(settings['input_dir']):
+                            os.makedirs(settings['input_dir'], exist_ok=True)
+                        SCANNER_WATCH_DIR = settings['input_dir']
+                    except Exception as e:
+                        print(f"⚠️  Could not use saved input_dir: {e}. Using default.")
+                
+                # Load exam details from settings
+                if 'exam_details' in settings and isinstance(settings['exam_details'], dict):
+                    saved_exam_details = settings['exam_details']
+                    # Update current_answer_copy exam_details with saved values
+                    current_answer_copy['exam_details'] = {
+                        'degree': saved_exam_details.get('degree'),
+                        'subject': saved_exam_details.get('subject'),
+                        'exam_date': saved_exam_details.get('exam_date'),
+                        'college': saved_exam_details.get('college'),
+                        'unique_id': saved_exam_details.get('unique_id')
+                    }
+                
                 print(f"✓ Settings loaded from {SETTINGS_FILE}")
                 print(f"  Output directory: {os.path.abspath(OUTPUT_DIR)}")
-                print(f"  Scanner folder: {os.path.abspath(SCANNER_WATCH_DIR)}")
+                print(f"  Scanner folder (input_dir): {os.path.abspath(SCANNER_WATCH_DIR)}")
+                if current_answer_copy['exam_details'].get('degree'):
+                    print(f"  Exam details: {current_answer_copy['exam_details'].get('degree')} - {current_answer_copy['exam_details'].get('subject')}")
         except Exception as e:
             print(f"⚠️  Error loading settings: {e}. Using defaults.")
     else:
@@ -139,7 +170,9 @@ def save_settings():
         # Save absolute paths for portability
         settings = {
             'output_dir': os.path.abspath(OUTPUT_DIR),
-            'scanner_watch_dir': os.path.abspath(SCANNER_WATCH_DIR)
+            'scanner_watch_dir': os.path.abspath(SCANNER_WATCH_DIR),
+            'input_dir': os.path.abspath(SCANNER_WATCH_DIR),  # Alias for scanner_watch_dir
+            'exam_details': current_answer_copy['exam_details'].copy()
         }
         with open(SETTINGS_FILE, 'w', encoding='utf-8') as f:
             json.dump(settings, f, indent=2)
@@ -206,18 +239,21 @@ def start_answer_copy():
     working_path = os.path.join(WORKING_DIR, answer_copy_id)
     os.makedirs(working_path, exist_ok=True)
     
+    # Preserve exam details from settings (or use existing if available)
+    saved_exam_details = current_answer_copy.get('exam_details', {
+        'degree': None,
+        'subject': None,
+        'exam_date': None,
+        'college': None,
+        'unique_id': None
+    })
+    
     # Update state
     current_answer_copy = {
         'id': answer_copy_id,
         'images': [],
         'working_path': working_path,
-        'exam_details': {
-            'degree': None,
-            'subject': None,
-            'exam_date': None,
-            'college': None,
-            'unique_id': None
-        }
+        'exam_details': saved_exam_details.copy()
     }
     
     # Store in database
@@ -876,6 +912,12 @@ def set_exam_details():
         'unique_id': unique_id
     }
     
+    # Save exam details to settings.json
+    try:
+        save_settings()
+    except Exception as e:
+        print(f"⚠️  Error saving exam details to settings: {e}")
+    
     return jsonify({
         'success': True,
         'message': 'Exam details saved',
@@ -885,15 +927,17 @@ def set_exam_details():
 
 @app.route('/get_exam_details', methods=['GET'])
 def get_exam_details():
-    """Get exam details for current answer copy."""
+    """Get exam details for current answer copy or from settings."""
     global current_answer_copy
     
-    if not current_answer_copy['id']:
+    # If there's an active answer copy, return its exam details
+    if current_answer_copy['id']:
         return jsonify({
-            'success': False,
-            'error': 'No active answer copy'
-        }), 400
+            'success': True,
+            'exam_details': current_answer_copy['exam_details']
+        })
     
+    # Otherwise, return exam details from settings (loaded at startup)
     return jsonify({
         'success': True,
         'exam_details': current_answer_copy['exam_details']
