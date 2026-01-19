@@ -2,7 +2,7 @@
   "name": "answer-sheet-scanning",
   "version": "1.0.0",
   "description": "Offline Answer Sheet Image-to-PDF Desktop Application",
-  "main": "main.js",
+  "main": "src/main/main.js",
   "scripts": {
     "start": "electron .",
     "build": "electron-builder",

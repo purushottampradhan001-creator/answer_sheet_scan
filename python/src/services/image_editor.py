@@ -2,6 +2,8 @@
 Image editing utilities for crop, rotate, brightness, contrast adjustments.
 """
 
+# This file was moved from image_editor.py - update imports if needed
+
 from PIL import Image, ImageEnhance, ImageOps
 import io
 import base64

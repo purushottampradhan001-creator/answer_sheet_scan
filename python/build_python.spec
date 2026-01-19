@@ -17,9 +17,15 @@ hiddenimports = [
     'reportlab',
     'watchdog',
     'sqlite3',
-    'validator',
-    'pdf_generator',
-    'image_editor',
+    'src.services.image_validator',
+    'src.services.pdf_generator',
+    'src.services.image_editor',
+    'src.services.scanner_watcher',
+    'src.models.database',
+    'src.models.answer_copy',
+    'src.utils.file_utils',
+    'src.utils.image_utils',
+    'src.app.config',
 ]
 
 # Collect data files for opencv
@@ -37,7 +43,7 @@ except:
     pass
 
 a = Analysis(
-    ['image_engine.py'],
+    ['src/app/main.py'],
     pathex=[],
     binaries=[],
     datas=datas,

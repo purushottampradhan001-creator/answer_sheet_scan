@@ -89,6 +89,9 @@ async function init() {
         // Continue anyway - backend might start later
     }
     
+    // Load saved exam details first (before auto-starting)
+    await loadSavedExamDetails();
+    
     // Auto-start answer copy
     await autoStartAnswerCopy();
     
@@ -735,7 +738,12 @@ async function autoStartAnswerCopy() {
         if (statusData.active) {
             currentAnswerCopyId = statusData.answer_copy_id;
             currentImages = statusData.images || [];
-            examDetails = statusData.exam_details || examDetails;
+            // Use exam details from backend (which loads from saved settings)
+            if (statusData.exam_details) {
+                examDetails = statusData.exam_details;
+                // Update UI with saved exam details
+                updateExamDetailsInUI(examDetails);
+            }
             updateUI();
             return true;
         }
@@ -753,19 +761,40 @@ async function autoStartAnswerCopy() {
         if (data.success) {
             currentAnswerCopyId = data.answer_copy_id;
             currentImages = [];
-            // Keep existing exam details if they exist, otherwise reset
-            if (!examDetails || (!examDetails.degree && !examDetails.subject && !examDetails.exam_date && !examDetails.college)) {
-                examDetails = {
-                    degree: null,
-                    subject: null,
-                    exam_date: null,
-                    college: null,
-                    unique_id: null
-                };
+            
+            // Load exam details from the response (automatically restored from saved settings)
+            if (data.exam_details) {
+                examDetails = data.exam_details;
+            } else {
+                // Fallback: try to get from backend
+                try {
+                    const examResponse = await fetch(`${API_URL}/get_exam_details`);
+                    const examData = await examResponse.json();
+                    if (examData.success && examData.exam_details) {
+                        examDetails = examData.exam_details;
+                    }
+                } catch (e) {
+                    // Ignore errors
+                }
             }
+            
             updateUI();
-            // Show exam details modal with pre-populated values
-            showExamModal();
+            
+            // Only show exam modal if exam details are not already saved
+            const hasExamDetails = examDetails && 
+                examDetails.degree && 
+                examDetails.subject && 
+                examDetails.exam_date && 
+                examDetails.college;
+            
+            if (!hasExamDetails) {
+                // Show exam details modal with pre-populated values (if any)
+                showExamModal();
+            } else {
+                // Exam details are already saved, just update the UI
+                updateExamDetailsInUI(examDetails);
+                showMessage('Answer copy started with saved exam details', 'success');
+            }
             return true;
         } else {
             showMessage(data.error || 'Failed to initialize', 'error');
@@ -1395,6 +1424,54 @@ function closeExamModal() {
     }
 }
 
+async function loadSavedExamDetails() {
+    // Load saved exam details from backend on app startup
+    try {
+        const response = await fetch(`${API_URL}/get_exam_details`);
+        const data = await response.json();
+        
+        if (data.success && data.exam_details) {
+            examDetails = data.exam_details;
+            // Update UI with saved exam details
+            updateExamDetailsInUI(examDetails);
+        }
+    } catch (error) {
+        console.error('Error loading saved exam details:', error);
+        // Continue without exam details - they'll be loaded when answer copy starts
+    }
+}
+
+function updateExamDetailsInUI(details) {
+    // Update all exam detail fields in the UI with provided details
+    if (!details) return;
+    
+    // Update modal form
+    const examDegree = document.getElementById('exam-degree');
+    const examSubject = document.getElementById('exam-subject');
+    const examDate = document.getElementById('exam-date');
+    const examCollege = document.getElementById('exam-college');
+    const examUniqueId = document.getElementById('exam-unique-id');
+    
+    if (examDegree) examDegree.value = details.degree || '';
+    if (examSubject) examSubject.value = details.subject || '';
+    if (examDate) examDate.value = details.exam_date || '';
+    if (examCollege) examCollege.value = details.college || '';
+    if (examUniqueId) examUniqueId.value = details.unique_id || '';
+    
+    // Update settings tab form
+    const settingsDegree = document.getElementById('settings-exam-degree');
+    const settingsSubject = document.getElementById('settings-exam-subject');
+    const settingsDate = document.getElementById('settings-exam-date');
+    const settingsCollege = document.getElementById('settings-exam-college');
+    const settingsUniqueId = document.getElementById('settings-exam-unique-id');
+    
+    if (settingsDegree) settingsDegree.value = details.degree || '';
+    if (settingsSubject) settingsSubject.value = details.subject || '';
+    if (settingsDate) settingsDate.value = details.exam_date || '';
+    if (settingsCollege) settingsCollege.value = details.college || '';
+    if (settingsUniqueId) settingsUniqueId.value = details.unique_id || '';
+}
+
 async function loadExamDetails() {
     try {
         const response = await fetch(`${API_URL}/get_exam_details`);
@@ -1402,45 +1479,38 @@ async function loadExamDetails() {
         
         if (data.success && data.exam_details) {
             const details = data.exam_details;
-            // Update modal form
-            document.getElementById('exam-degree').value = details.degree || '';
-            document.getElementById('exam-subject').value = details.subject || '';
-            document.getElementById('exam-date').value = details.exam_date || '';
-            document.getElementById('exam-college').value = details.college || '';
-            document.getElementById('exam-unique-id').value = details.unique_id || '';
-            // Update settings tab form
-            document.getElementById('settings-exam-degree').value = details.degree || '';
-            document.getElementById('settings-exam-subject').value = details.subject || '';
-            document.getElementById('settings-exam-date').value = details.exam_date || '';
-            document.getElementById('settings-exam-college').value = details.college || '';
-            document.getElementById('settings-exam-unique-id').value = details.unique_id || '';
             examDetails = details;
+            // Update UI with exam details
+            updateExamDetailsInUI(details);
         } else {
             // If no exam details from backend, use saved examDetails from settings
             if (examDetails && (examDetails.degree || examDetails.subject || examDetails.exam_date || examDetails.college)) {
-                document.getElementById('exam-degree').value = examDetails.degree || '';
-                document.getElementById('exam-subject').value = examDetails.subject || '';
-                document.getElementById('exam-date').value = examDetails.exam_date || '';
-                document.getElementById('exam-college').value = examDetails.college || '';
-                document.getElementById('exam-unique-id').value = examDetails.unique_id || '';
+                updateExamDetailsInUI(examDetails);
+            } else {
+                // Clear the form
+                updateExamDetailsInUI({
+                    degree: '',
+                    subject: '',
+                    exam_date: '',
+                    college: '',
+                    unique_id: ''
+                });
             }
         }
     } catch (error) {
         console.error('Error loading exam details:', error);
         // If endpoint doesn't exist or error, use saved examDetails from settings
         if (examDetails && (examDetails.degree || examDetails.subject || examDetails.exam_date || examDetails.college)) {
-            document.getElementById('exam-degree').value = examDetails.degree || '';
-            document.getElementById('exam-subject').value = examDetails.subject || '';
-            document.getElementById('exam-date').value = examDetails.exam_date || '';
-            document.getElementById('exam-college').value = examDetails.college || '';
-            document.getElementById('exam-unique-id').value = examDetails.unique_id || '';
+            updateExamDetailsInUI(examDetails);
         } else {
             // Clear the form
-            document.getElementById('exam-degree').value = '';
-            document.getElementById('exam-subject').value = '';
-            document.getElementById('exam-date').value = '';
-            document.getElementById('exam-college').value = '';
-            document.getElementById('exam-unique-id').value = '';
+            updateExamDetailsInUI({
+                degree: '',
+                subject: '',
+                exam_date: '',
+                college: '',
+                unique_id: ''
+            });
         }
     }
 }

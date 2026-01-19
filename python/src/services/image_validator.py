@@ -3,6 +3,8 @@ Image validation module for duplicate detection and quality checks.
 Works completely offline.
 """
 
+# This file was moved from validator.py - update imports if needed
+
 import cv2
 import numpy as np
 from PIL import Image

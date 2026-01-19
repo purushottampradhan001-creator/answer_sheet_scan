@@ -3,6 +3,8 @@ PDF generation module using ReportLab.
 Creates one PDF per answer copy from ordered images.
 """
 
+# This file was moved from pdf_generator.py - update imports if needed
+
 from reportlab.lib.pagesizes import letter, A4
 from reportlab.lib.utils import ImageReader
 from reportlab.pdfgen import canvas
