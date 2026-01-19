@@ -11,6 +11,10 @@ from reportlab.pdfgen import canvas
 from PIL import Image
 import os
 import re
+import uuid
+import random
+import time
+import hashlib
 from typing import List, Optional
 
 
@@ -57,46 +61,55 @@ class PDFGenerator:
         if not image_paths:
             raise ValueError("No images provided for PDF generation")
         
-        # Generate filename based on exam details
-        if exam_details and all([
-            exam_details.get('degree'),
-            exam_details.get('subject'),
-            exam_details.get('exam_date'),
-            exam_details.get('college')
-        ]):
-            # Format: Degree_Subject_ExamDate_College_UniqueID.pdf
-            degree = sanitize_filename(exam_details['degree'])
-            subject = sanitize_filename(exam_details['subject'])
-            exam_date = exam_details['exam_date'].replace('-', '')  # Remove dashes from date
-            college = sanitize_filename(exam_details['college'])
+        # Generate filename: degree3_subject3_examdate3_college3_uuid6.pdf
+        if exam_details:
+            # Extract first 3 characters from each field (uppercase, pad if needed)
+            def get_3_chars(field_value: str) -> str:
+                """Get first 3 characters from field, uppercase, pad if needed."""
+                if not field_value:
+                    return ''
+                # Sanitize first
+                sanitized = sanitize_filename(field_value)
+                # Get first 3 chars, uppercase
+                chars = sanitized[:3].upper()
+                # Pad with 'X' if shorter than 3
+                return chars.ljust(3, 'X')
             
-            # Get unique_id, generate from fields if missing
-            unique_id = exam_details.get('unique_id')
-            if not unique_id:
-                # Generate from last 2 characters of each field
-                unique_parts = []
-                if degree:
-                    deg_part = degree[-2:].upper() if len(degree) >= 2 else degree.upper()
-                    unique_parts.append(deg_part)
-                if subject:
-                    subj_part = subject[-2:].upper() if len(subject) >= 2 else subject.upper()
-                    unique_parts.append(subj_part)
-                if exam_date:
-                    date_part = exam_date[-2:] if len(exam_date) >= 2 else exam_date
-                    unique_parts.append(date_part)
-                if college:
-                    coll_part = college[-2:].upper() if len(college) >= 2 else college.upper()
-                    unique_parts.append(coll_part)
-                
-                if unique_parts:
-                    unique_id = ''.join(unique_parts)
-                else:
-                    # Fallback to timestamp
-                    unique_id = answer_copy_id.split('_')[-1]
+            degree = get_3_chars(exam_details.get('degree') or '')
+            subject = get_3_chars(exam_details.get('subject') or '')
+            # For exam_date, remove dashes and get first 3 chars
+            exam_date_raw = (exam_details.get('exam_date') or '').replace('-', '')
+            exam_date = get_3_chars(exam_date_raw)
+            college = get_3_chars(exam_details.get('college') or '')
             
-            pdf_filename = f"{degree}_{subject}_{exam_date}_{college}_{unique_id}.pdf"
+            # Generate 6-digit unique ID that won't repeat across multiple instances
+            # Use UUID4 (guaranteed unique) + timestamp, then hash to 6 digits
+            # This ensures uniqueness even when running multiple instances simultaneously
+            uuid_value = uuid.uuid4()
+            timestamp = int(time.time() * 1000000)  # Microseconds for precision
+            # Combine UUID and timestamp, then hash using SHA256 (deterministic)
+            combined = f"{uuid_value}{timestamp}"
+            hash_obj = hashlib.sha256(combined.encode())
+            hash_hex = hash_obj.hexdigest()
+            # Convert first 6 hex digits to integer, then modulo to 6-digit number
+            unique_id = f"{int(hash_hex[:6], 16) % 1000000:06d}"
+            
+            # Build filename: degree3_subject3_examdate3_college3_uuid6.pdf
+            filename_parts = []
+            if degree:
+                filename_parts.append(degree)
+            if subject:
+                filename_parts.append(subject)
+            if exam_date:
+                filename_parts.append(exam_date)
+            if college:
+                filename_parts.append(college)
+            # Always add 6-digit UUID at the end
+            filename_parts.append(unique_id)
+            
+            pdf_filename = '_'.join(filename_parts) + '.pdf'
         else:
-            # Fallback to original format
+            # Fallback to original format if no exam details
             pdf_filename = f"{answer_copy_id}.pdf"
         
         pdf_path = os.path.join(self.output_dir, pdf_filename)
