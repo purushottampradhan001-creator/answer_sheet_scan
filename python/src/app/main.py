@@ -20,6 +20,7 @@ from flask_cors import CORS
 import shutil
 import sqlite3
 from datetime import datetime
+from typing import Dict
 
 # Use absolute imports with src.* prefix
 from src.app.config import config
@@ -28,6 +29,7 @@ from src.models.answer_copy import AnswerCopy
 from src.services.image_validator import ImageValidator
 from src.services.pdf_generator import PDFGenerator
 from src.services.scanner_watcher import ScannerWatcher
+from src.services.auto_image_processor import AutoImageProcessor
 from src.utils.file_utils import generate_answer_copy_id, list_images_in_directory, list_pdfs_in_directory, sanitize_filename
 from src.utils.image_utils import extract_unique_id_from_image, generate_unique_id_from_fields
 from src.services.image_editor import apply_edits
@@ -41,6 +43,7 @@ CORS(app)
 # Initialize components
 validator = ImageValidator(hash_threshold=5)
 pdf_generator = PDFGenerator(output_dir=config.output_dir)
+auto_processor = AutoImageProcessor()
 db = Database(config.db_path)
 
 # Global state for current answer copy
@@ -63,6 +66,32 @@ def safe_strip(value):
     if isinstance(value, str):
         return value.strip() or None
     return str(value).strip() or None
+
+
+def auto_process_uploaded_image(image_path: str) -> Dict:
+    """
+    Automatically process uploaded image with all auto-processing features.
+    
+    Args:
+        image_path: Path to the image file
+    
+    Returns:
+        Dictionary with processing results and messages (from auto_processor.auto_process)
+    """
+    try:
+        # Run auto processing with all checks and fixes
+        # Messages are already built in auto_process function
+        auto_result = auto_processor.auto_process(image_path, auto_fix=True)
+        return auto_result
+    except Exception as e:
+        return {
+            'messages': [f"❌ Error during auto-processing: {str(e)}"],
+            'checks': {},
+            'fixes_applied': [],
+            'needs_attention': True,
+            'warnings': [f"Error: {str(e)}"],
+            'error': str(e)
+        }
 
 
 def cleanup_scanner_folder_internal():
@@ -193,8 +222,8 @@ def upload_image():
     temp_path = os.path.join(config.upload_dir, file.filename)
     file.save(temp_path)
     
-    # Validate image
-    validation_result = validator.validate_image(temp_path)
+    # Validate image (with auto checks)
+    validation_result = validator.validate_image(temp_path, include_auto_checks=True)
     
     if not validation_result['valid']:
         os.remove(temp_path)
@@ -203,12 +232,15 @@ def upload_image():
             'validation': validation_result
         }), 400
     
+    # Auto-process image (apply all fixes automatically)
+    auto_processing_result = auto_process_uploaded_image(temp_path)
+    
     # Image is valid - store it
     sequence_number = len(current_answer_copy.images) + 1
     image_filename = f"page_{sequence_number:02d}.jpg"
     final_path = os.path.join(current_answer_copy.working_path, image_filename)
     
-    # Move to working directory
+    # Move processed image to working directory
     shutil.move(temp_path, final_path)
     
     # Update state
@@ -226,6 +258,7 @@ def upload_image():
     return jsonify({
         'success': True,
         'validation': validation_result,
+        'auto_processing': auto_processing_result,
         'image': {
             'path': final_path,
             'sequence': sequence_number,
@@ -562,6 +595,206 @@ def cleanup_scanner_folder():
         'success': True,
         **result
     })
+
+
+# Auto image processing routes
+@app.route('/auto_check_image', methods=['POST'])
+def auto_check_image():
+    """Auto check image for blur, cuts, borders, two pages, etc."""
+    data = request.get_json()
+    image_path = data.get('image_path')
+    
+    if not image_path:
+        return jsonify({
+            'success': False,
+            'error': 'Image path is required'
+        }), 400
+    
+    if not os.path.exists(image_path):
+        return jsonify({
+            'success': False,
+            'error': 'Image file not found'
+        }), 404
+    
+    try:
+        result = auto_processor.auto_process(image_path, auto_fix=False)
+        return jsonify({
+            'success': True,
+            **result
+        })
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': f'Auto check failed: {str(e)}'
+        }), 500
+
+
+@app.route('/auto_process_image', methods=['POST'])
+def auto_process_image():
+    """Auto process image with fixes (remove objects, crop borders, etc.)."""
+    data = request.get_json()
+    image_path = data.get('image_path')
+    output_path = data.get('output_path')  # Optional
+    
+    if not image_path:
+        return jsonify({
+            'success': False,
+            'error': 'Image path is required'
+        }), 400
+    
+    if not os.path.exists(image_path):
+        return jsonify({
+            'success': False,
+            'error': 'Image file not found'
+        }), 404
+    
+    try:
+        result = auto_processor.auto_process(image_path, output_path=output_path, auto_fix=True)
+        return jsonify({
+            'success': True,
+            **result
+        })
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': f'Auto processing failed: {str(e)}'
+        }), 500
+
+
+@app.route('/split_two_pages', methods=['POST'])
+def split_two_pages():
+    """Split an image containing 2 pages into 2 separate images."""
+    global current_answer_copy
+    
+    data = request.get_json()
+    image_path = data.get('image_path')
+    sequence = data.get('sequence')  # Optional: sequence number of image in current answer copy
+    
+    if not image_path:
+        # Try to get from current answer copy if sequence is provided
+        if sequence and current_answer_copy:
+            image_data = next(
+                (img for img in current_answer_copy.images if img['sequence'] == sequence),
+                None
+            )
+            if image_data:
+                image_path = image_data['path']
+        
+        if not image_path:
+            return jsonify({
+                'success': False,
+                'error': 'Image path or sequence is required'
+            }), 400
+    
+    if not os.path.exists(image_path):
+        return jsonify({
+            'success': False,
+            'error': 'Image file not found'
+        }), 404
+    
+    try:
+        # Detect if two pages
+        two_pages_info = auto_processor.detect_two_pages(image_path)
+        
+        if not two_pages_info.get('is_two_pages'):
+            return jsonify({
+                'success': False,
+                'error': 'Two pages not detected in this image',
+                'detection_info': two_pages_info
+            }), 400
+        
+        # Determine output directory
+        if current_answer_copy and sequence:
+            output_dir = current_answer_copy.working_path
+        else:
+            output_dir = os.path.dirname(image_path)
+        
+        # Split the pages
+        split_paths = auto_processor.split_two_pages(image_path, output_dir, two_pages_info)
+        
+        if not split_paths:
+            return jsonify({
+                'success': False,
+                'error': 'Failed to split pages'
+            }), 500
+        
+        return jsonify({
+            'success': True,
+            'split_images': split_paths,
+            'split_info': two_pages_info,
+            'message': f'Split into {len(split_paths)} images'
+        })
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': f'Page splitting failed: {str(e)}'
+        }), 500
+
+
+@app.route('/remove_yellow_objects', methods=['POST'])
+def remove_yellow_objects_endpoint():
+    """Remove yellow stickers/objects from image."""
+    data = request.get_json()
+    image_path = data.get('image_path')
+    output_path = data.get('output_path')
+    
+    if not image_path:
+        return jsonify({
+            'success': False,
+            'error': 'Image path is required'
+        }), 400
+    
+    if not os.path.exists(image_path):
+        return jsonify({
+            'success': False,
+            'error': 'Image file not found'
+        }), 404
+    
+    try:
+        processed_path = auto_processor.remove_yellow_objects(image_path, output_path)
+        return jsonify({
+            'success': True,
+            'processed_image_path': processed_path,
+            'message': 'Yellow objects removed'
+        })
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': f'Failed to remove yellow objects: {str(e)}'
+        }), 500
+
+
+@app.route('/remove_fingers', methods=['POST'])
+def remove_fingers_endpoint():
+    """Remove finger marks from image."""
+    data = request.get_json()
+    image_path = data.get('image_path')
+    output_path = data.get('output_path')
+    
+    if not image_path:
+        return jsonify({
+            'success': False,
+            'error': 'Image path is required'
+        }), 400
+    
+    if not os.path.exists(image_path):
+        return jsonify({
+            'success': False,
+            'error': 'Image file not found'
+        }), 404
+    
+    try:
+        processed_path = auto_processor.remove_fingers(image_path, output_path)
+        return jsonify({
+            'success': True,
+            'processed_image_path': processed_path,
+            'message': 'Finger marks removed'
+        })
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': f'Failed to remove fingers: {str(e)}'
+        }), 500
 
 
 # Exam details routes

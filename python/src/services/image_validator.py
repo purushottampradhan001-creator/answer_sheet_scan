@@ -110,9 +110,13 @@ class ImageValidator:
         except Exception as e:
             return 'rejected', {'error': f'Quality check failed: {str(e)}'}
     
-    def validate_image(self, image_path: str) -> Dict:
+    def validate_image(self, image_path: str, include_auto_checks: bool = False) -> Dict:
         """
-        Complete validation: duplicate + quality.
+        Complete validation: duplicate + quality + optional auto checks.
+        
+        Args:
+            image_path: Path to image file
+            include_auto_checks: If True, include auto processor checks
         
         Returns:
             {
@@ -120,7 +124,8 @@ class ImageValidator:
                 'duplicate': bool,
                 'quality_status': str,
                 'message': str,
-                'details': dict
+                'details': dict,
+                'auto_checks': dict (if include_auto_checks=True)
             }
         """
         result = {
@@ -147,6 +152,18 @@ class ImageValidator:
         if quality_status == 'rejected':
             result['message'] = quality_details.get('error', 'Image rejected')
             return result
+        
+        # Optional auto checks
+        if include_auto_checks:
+            try:
+                from src.services.auto_image_processor import AutoImageProcessor
+                auto_processor = AutoImageProcessor()
+                auto_result = auto_processor.auto_process(image_path, auto_fix=False)
+                result['auto_checks'] = auto_result['checks']
+                result['auto_warnings'] = auto_result['warnings']
+                result['needs_attention'] = auto_result['needs_attention']
+            except Exception as e:
+                result['auto_checks'] = {'error': str(e)}
         
         # Image is valid
         result['valid'] = True

@@ -22,6 +22,7 @@ if _project_dir not in sys.path:
     sys.path.insert(0, _project_dir)
 
 from src.services.image_validator import ImageValidator
+from src.services.auto_image_processor import AutoImageProcessor
 from src.models.answer_copy import AnswerCopy
 from src.models.database import Database
 from src.utils.image_utils import extract_unique_id_from_image
@@ -77,6 +78,7 @@ class ScannerWatcher:
         self.current_answer_copy = current_answer_copy
         self.db = db
         self.observer: Optional[Observer] = None
+        self.auto_processor = AutoImageProcessor()
     
     def start(self):
         """Start watching the scanner folder for new images."""
@@ -108,19 +110,34 @@ class ScannerWatcher:
         
         try:
             # Validate image
-            validation_result = self.validator.validate_image(image_path)
+            validation_result = self.validator.validate_image(image_path, include_auto_checks=True)
             
             if not validation_result['valid']:
                 print(f"❌ Image validation failed: {image_path}")
                 print(f"   Reason: {validation_result.get('message', 'Unknown error')}")
                 return
             
+            # Auto-process image (apply all fixes automatically)
+            print(f"🔍 Auto-processing image: {os.path.basename(image_path)}")
+            auto_result = self.auto_processor.auto_process(image_path, auto_fix=True)
+            
+            # Print processing messages
+            if auto_result.get('messages'):
+                for msg in auto_result['messages']:
+                    print(f"   {msg}")
+            
+            # Check for warnings
+            if auto_result.get('warnings'):
+                print(f"⚠️  Warnings:")
+                for warning in auto_result['warnings']:
+                    print(f"   • {warning}")
+            
             # Image is valid - store it
             sequence_number = len(self.current_answer_copy.images) + 1
             image_filename = f"page_{sequence_number:02d}.jpg"
             final_path = os.path.join(self.current_answer_copy.working_path, image_filename)
             
-            # Copy to working directory
+            # Copy processed image to working directory
             shutil.copy2(image_path, final_path)
             
             # Update state
