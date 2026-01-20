@@ -755,6 +755,11 @@ def split_two_pages():
         }), 404
     
     try:
+        # Auto-rotate before split detection
+        rotated_path, rotated = auto_processor.auto_rotate_image(image_path, output_path=image_path)
+        if rotated:
+            image_path = rotated_path
+
         # Detect if two pages
         two_pages_info = auto_processor.detect_two_pages(image_path)
         logger.info("two pages info",two_pages_info)
