@@ -55,11 +55,32 @@ let examDetails = {
 };
 let cropState = {
     enabled: false,
-    startX: 0,
-    startY: 0,
-    endX: 0,
-    endY: 0,
-    isDragging: false
+    mode: 'single', // single | split
+    splitDirection: null,
+    selections: {
+        primary: {
+            startX: 0,
+            startY: 0,
+            endX: 0,
+            endY: 0
+        },
+        secondary: {
+            startX: 0,
+            startY: 0,
+            endX: 0,
+            endY: 0
+        }
+    },
+    isDragging: false,
+    dragMode: null,
+    activeHandle: null,
+    activeSelection: 'primary',
+    dragStartX: 0,
+    dragStartY: 0,
+    startXInitial: 0,
+    startYInitial: 0,
+    endXInitial: 0,
+    endYInitial: 0
 };
 
 // Initialize
@@ -165,8 +186,8 @@ async function init() {
     // Crop functionality
     const btnCropToggle = document.getElementById('btn-crop-toggle');
     const btnCropClear = document.getElementById('btn-crop-clear');
+    const btnCropContinue = document.getElementById('btn-crop-continue');
     const cropOverlay = document.getElementById('crop-overlay');
-    const cropSelection = document.getElementById('crop-selection');
     
     if (btnCropToggle) {
         btnCropToggle.addEventListener('click', toggleCrop);
@@ -174,11 +195,12 @@ async function init() {
     if (btnCropClear) {
         btnCropClear.addEventListener('click', clearCrop);
     }
-    
-    // Crop selection dragging - attach to overlay for initial selection
-    if (cropOverlay) {
-        cropOverlay.addEventListener('mousedown', startCropDrag);
+    if (btnCropContinue) {
+        btnCropContinue.addEventListener('click', continueCrop);
     }
+    
+    // Crop selection dragging - attach handlers to overlay and selections
+    setupCropOverlayElements(cropOverlay);
     // Global mouse events for dragging
     document.addEventListener('mousemove', updateCropDrag);
     document.addEventListener('mouseup', endCropDrag);
@@ -374,9 +396,15 @@ async function loadImageForPreview(imagePath) {
             originalImage = img;
             currentEditingImage = imagePath;
             
-            // Show in editor
+            // Show in editor while preserving crop overlay
+            let existingOverlay = document.getElementById('crop-overlay');
             editorContainer.innerHTML = '';
             editorContainer.appendChild(currentEditingCanvas);
+            if (!existingOverlay) {
+                existingOverlay = createCropOverlay();
+            }
+            editorContainer.appendChild(existingOverlay);
+            setupCropOverlayElements(existingOverlay);
             editorControls.style.display = 'block';
             
             // Reset sliders
@@ -423,10 +451,8 @@ async function displayAutoProcessingInfo(imagePath) {
     
     try {
         const hasBeenProcessed = imageAutoProcessingApplied.has(imagePath);
-        const endpoint = hasBeenProcessed ? 'auto_check_image' : 'auto_process_image';
-
-        // Call the auto-processing endpoint (auto-check if already processed)
-        const response = await fetch(`${API_URL}/${endpoint}`, {
+        
+        const checkResponse = await fetch(`${API_URL}/auto_check_image`, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json'
@@ -436,32 +462,59 @@ async function displayAutoProcessingInfo(imagePath) {
             })
         });
         
-        if (!response.ok) {
-            throw new Error(`HTTP ${response.status}`);
+        if (!checkResponse.ok) {
+            throw new Error(`HTTP ${checkResponse.status}`);
         }
         
-        const data = await response.json();
+        const checkData = await checkResponse.json();
         
-        if (!data.success) {
-            throw new Error(data.error || 'Auto-check failed');
+        if (!checkData.success) {
+            throw new Error(checkData.error || 'Auto-check failed');
         }
         
         // Store the processing data for this image
-        imageAutoProcessingData[imagePath] = data;
-
-        // Mark this image as processed when auto-processing was run
-        if (!hasBeenProcessed) {
-            imageAutoProcessingApplied.add(imagePath);
+        imageAutoProcessingData[imagePath] = checkData;
+        
+        const twoPagesInfo = checkData.checks?.two_pages;
+        if (twoPagesInfo && twoPagesInfo.is_two_pages) {
+            enableSplitCrop(twoPagesInfo);
+            content.innerHTML = '';
+            return;
         }
-
-        // If image was split, mark split images as processed too
-        if (data.split_images && data.split_images.length > 0) {
-            data.split_images.forEach(splitPath => {
-                imageAutoProcessingApplied.add(splitPath);
+        
+        if (!hasBeenProcessed) {
+            const response = await fetch(`${API_URL}/auto_process_image`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    image_path: imagePath
+                })
             });
+            
+            if (!response.ok) {
+                throw new Error(`HTTP ${response.status}`);
+            }
+            
+            const data = await response.json();
+            
+            if (!data.success) {
+                throw new Error(data.error || 'Auto-processing failed');
+            }
+            
+            // Mark this image as processed when auto-processing was run
+            imageAutoProcessingApplied.add(imagePath);
+            
+            // If image was split, mark split images as processed too
+            if (data.split_images && data.split_images.length > 0) {
+                data.split_images.forEach(splitPath => {
+                    imageAutoProcessingApplied.add(splitPath);
+                });
 
-            // Refresh gallery to remove the original and show split images
-            await loadScannedImages();
+                // Refresh gallery to remove the original and show split images
+                await loadScannedImages();
+            }
         }
         
         // Do not display any auto-processing messages
@@ -614,75 +667,8 @@ async function applyEdits() {
         // Apply all edits to the canvas first
         updateEditorPreview();
         
-        // Apply crop if enabled and selection exists
-        const cropSelection = document.getElementById('crop-selection');
-        if (cropState.enabled && cropSelection && cropState.startX !== cropState.endX && cropState.startY !== cropState.endY) {
-            // Get the canvas position within the container
-            const containerRect = editorContainer.getBoundingClientRect();
-            const canvasRect = currentEditingCanvas.getBoundingClientRect();
-            
-            // Calculate the actual canvas position within container (centered)
-            const canvasOffsetX = (containerRect.width - canvasRect.width) / 2;
-            const canvasOffsetY = (containerRect.height - canvasRect.height) / 2;
-            
-            // Get crop coordinates relative to container
-            const left = Math.min(cropState.startX, cropState.endX);
-            const top = Math.min(cropState.startY, cropState.endY);
-            const width = Math.abs(cropState.endX - cropState.startX);
-            const height = Math.abs(cropState.endY - cropState.startY);
-            
-            // Convert to canvas coordinates
-            const cropX = Math.max(0, left - canvasOffsetX);
-            const cropY = Math.max(0, top - canvasOffsetY);
-            const cropWidth = Math.min(canvasRect.width - cropX, width);
-            const cropHeight = Math.min(canvasRect.height - cropY, height);
-            
-            if (cropWidth > 0 && cropHeight > 0) {
-                // Calculate scale factors
-                const scaleX = currentEditingCanvas.width / canvasRect.width;
-                const scaleY = currentEditingCanvas.height / canvasRect.height;
-                
-                // Convert to actual canvas pixel coordinates
-                const actualCropX = cropX * scaleX;
-                const actualCropY = cropY * scaleY;
-                const actualCropWidth = cropWidth * scaleX;
-                const actualCropHeight = cropHeight * scaleY;
-                
-                // Create new canvas with cropped image
-                const croppedCanvas = document.createElement('canvas');
-                croppedCanvas.width = actualCropWidth;
-                croppedCanvas.height = actualCropHeight;
-                const croppedCtx = croppedCanvas.getContext('2d');
-                
-                // Draw cropped portion
-                croppedCtx.drawImage(
-                    currentEditingCanvas,
-                    actualCropX, actualCropY, actualCropWidth, actualCropHeight,
-                    0, 0, actualCropWidth, actualCropHeight
-                );
-                
-                // Replace current canvas with cropped version
-                currentEditingCanvas.width = actualCropWidth;
-                currentEditingCanvas.height = actualCropHeight;
-                currentEditingCtx.clearRect(0, 0, actualCropWidth, actualCropHeight);
-                currentEditingCtx.drawImage(croppedCanvas, 0, 0);
-                
-                // Update original image reference
-                const img = new Image();
-                img.onload = () => {
-                    originalImage = img;
-                    clearCrop();
-                    updateEditorPreview();
-                    showMessage('Crop applied successfully', 'success');
-                };
-                img.onerror = () => {
-                    showMessage('Error applying crop', 'error');
-                };
-                img.src = croppedCanvas.toDataURL();
-            } else {
-                showMessage('Invalid crop selection', 'warning');
-            }
-        } else {
+        const cropResult = await applyCropSelection();
+        if (cropResult === null) {
             showMessage('Edits applied successfully', 'success');
         }
         
@@ -692,11 +678,489 @@ async function applyEdits() {
     }
 }
 
-function toggleCrop() {
-    cropState.enabled = !cropState.enabled;
+async function continueCrop() {
+    if (!currentEditingCanvas || !originalImage) {
+        showMessage('No image to crop', 'warning');
+        return;
+    }
+    
+    if (cropState.mode === 'split') {
+        await applySplitCropSelections();
+        return;
+    }
+    
+    updateEditorPreview();
+    await applyCropSelection({ requireSelection: true });
+}
+
+async function applyCropSelection({ requireSelection = false } = {}) {
+    if (cropState.mode === 'split') {
+        return null;
+    }
+    
+    const cropSelection = document.getElementById('crop-selection');
+    if (!cropState.enabled || !cropSelection || !currentEditingCanvas || !editorContainer) {
+        return requireSelection ? false : null;
+    }
+    
+    const selectionState = cropState.selections.primary;
+    const hasSelection = selectionState.startX !== selectionState.endX && selectionState.startY !== selectionState.endY;
+    if (!hasSelection) {
+        if (requireSelection) {
+            showMessage('Adjust the crop box before continuing', 'warning');
+            return false;
+        }
+        return null;
+    }
+    
+    // Get the canvas position within the container
+    const containerRect = editorContainer.getBoundingClientRect();
+    const canvasRect = currentEditingCanvas.getBoundingClientRect();
+    
+    // Calculate the actual canvas position within container (centered)
+    const canvasOffsetX = (containerRect.width - canvasRect.width) / 2;
+    const canvasOffsetY = (containerRect.height - canvasRect.height) / 2;
+    
+    // Get crop coordinates relative to container
+    const left = Math.min(selectionState.startX, selectionState.endX);
+    const top = Math.min(selectionState.startY, selectionState.endY);
+    const width = Math.abs(selectionState.endX - selectionState.startX);
+    const height = Math.abs(selectionState.endY - selectionState.startY);
+    
+    // Convert to canvas coordinates
+    const cropX = Math.max(0, left - canvasOffsetX);
+    const cropY = Math.max(0, top - canvasOffsetY);
+    const cropWidth = Math.min(canvasRect.width - cropX, width);
+    const cropHeight = Math.min(canvasRect.height - cropY, height);
+    
+    if (cropWidth <= 0 || cropHeight <= 0) {
+        showMessage('Invalid crop selection', 'warning');
+        return false;
+    }
+    
+    // Calculate scale factors
+    const scaleX = currentEditingCanvas.width / canvasRect.width;
+    const scaleY = currentEditingCanvas.height / canvasRect.height;
+    
+    // Convert to actual canvas pixel coordinates
+    const actualCropX = cropX * scaleX;
+    const actualCropY = cropY * scaleY;
+    const actualCropWidth = cropWidth * scaleX;
+    const actualCropHeight = cropHeight * scaleY;
+    
+    // Create new canvas with cropped image
+    const croppedCanvas = document.createElement('canvas');
+    croppedCanvas.width = actualCropWidth;
+    croppedCanvas.height = actualCropHeight;
+    const croppedCtx = croppedCanvas.getContext('2d');
+    
+    // Draw cropped portion
+    croppedCtx.drawImage(
+        currentEditingCanvas,
+        actualCropX, actualCropY, actualCropWidth, actualCropHeight,
+        0, 0, actualCropWidth, actualCropHeight
+    );
+    
+    return await new Promise((resolve) => {
+        // Replace current canvas with cropped version
+        currentEditingCanvas.width = actualCropWidth;
+        currentEditingCanvas.height = actualCropHeight;
+        currentEditingCtx.clearRect(0, 0, actualCropWidth, actualCropHeight);
+        currentEditingCtx.drawImage(croppedCanvas, 0, 0);
+        
+        // Update original image reference
+        const img = new Image();
+        img.onload = () => {
+            originalImage = img;
+            clearCrop();
+            updateEditorPreview();
+            showMessage('Crop applied successfully', 'success');
+            resolve(true);
+        };
+        img.onerror = () => {
+            showMessage('Error applying crop', 'error');
+            resolve(false);
+        };
+        img.src = croppedCanvas.toDataURL();
+    });
+}
+
+function computeCropCoordsFromSelection(selectionState) {
+    if (!currentEditingCanvas || !editorContainer) return null;
+    const containerRect = editorContainer.getBoundingClientRect();
+    const canvasRect = currentEditingCanvas.getBoundingClientRect();
+    
+    // Calculate the actual canvas position within container (centered)
+    const canvasOffsetX = (containerRect.width - canvasRect.width) / 2;
+    const canvasOffsetY = (containerRect.height - canvasRect.height) / 2;
+    
+    const left = Math.min(selectionState.startX, selectionState.endX);
+    const top = Math.min(selectionState.startY, selectionState.endY);
+    const width = Math.abs(selectionState.endX - selectionState.startX);
+    const height = Math.abs(selectionState.endY - selectionState.startY);
+    
+    const cropX = Math.max(0, left - canvasOffsetX);
+    const cropY = Math.max(0, top - canvasOffsetY);
+    const cropWidth = Math.min(canvasRect.width - cropX, width);
+    const cropHeight = Math.min(canvasRect.height - cropY, height);
+    
+    if (cropWidth <= 0 || cropHeight <= 0) {
+        return null;
+    }
+    
+    const scaleX = currentEditingCanvas.width / canvasRect.width;
+    const scaleY = currentEditingCanvas.height / canvasRect.height;
+    
+    return {
+        x: Math.round(cropX * scaleX),
+        y: Math.round(cropY * scaleY),
+        width: Math.round(cropWidth * scaleX),
+        height: Math.round(cropHeight * scaleY)
+    };
+}
+
+async function applySplitCropSelections() {
+    if (!currentEditingImage || !currentEditingCanvas) {
+        showMessage('No image to split', 'warning');
+        return;
+    }
+    
+    const primary = cropState.selections.primary;
+    const secondary = cropState.selections.secondary;
+    
+    if (!selectionHasArea(primary) || !selectionHasArea(secondary)) {
+        showMessage('Adjust both crop boxes before continuing', 'warning');
+        return;
+    }
+    
+    const primaryCrop = computeCropCoordsFromSelection(primary);
+    const secondaryCrop = computeCropCoordsFromSelection(secondary);
+    
+    if (!primaryCrop || !secondaryCrop) {
+        showMessage('Invalid split selection', 'warning');
+        return;
+    }
+    
+    const crops = [primaryCrop, secondaryCrop];
+    if (cropState.splitDirection === 'vertical') {
+        crops.sort((a, b) => a.x - b.x);
+    } else if (cropState.splitDirection === 'horizontal') {
+        crops.sort((a, b) => a.y - b.y);
+    }
+    
+    try {
+        const response = await fetch(`${API_URL}/split_image_with_crops`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                image_path: currentEditingImage,
+                crops
+            })
+        });
+        
+        if (!response.ok) {
+            throw new Error(`HTTP ${response.status}`);
+        }
+        
+        const data = await response.json();
+        if (!data.success) {
+            throw new Error(data.error || 'Split failed');
+        }
+        
+        showMessage('Image split into 2 pages', 'success');
+        clearImagePreview();
+        await loadScannedImages();
+    } catch (error) {
+        console.error('Split image error:', error);
+        showMessage(`Error splitting image: ${error.message}`, 'error');
+    }
+}
+
+function clamp(value, min, max) {
+    return Math.min(Math.max(value, min), max);
+}
+
+function getSelectionElement(selectionKey) {
+    if (selectionKey === 'secondary') {
+        return document.getElementById('crop-selection-secondary');
+    }
+    return document.getElementById('crop-selection');
+}
+
+function getSelectionState(selectionKey) {
+    return cropState.selections[selectionKey] || cropState.selections.primary;
+}
+
+function selectionHasArea(selectionState) {
+    return selectionState.startX !== selectionState.endX && selectionState.startY !== selectionState.endY;
+}
+
+function initializeCropSelectionToCanvas() {
+    if (!currentEditingCanvas || !editorContainer) return;
+    const containerRect = editorContainer.getBoundingClientRect();
+    const canvasRect = currentEditingCanvas.getBoundingClientRect();
+    
+    const left = clamp(canvasRect.left - containerRect.left, 0, containerRect.width);
+    const top = clamp(canvasRect.top - containerRect.top, 0, containerRect.height);
+    const right = clamp(left + canvasRect.width, 0, containerRect.width);
+    const bottom = clamp(top + canvasRect.height, 0, containerRect.height);
+    
+    cropState.mode = 'single';
+    const primary = cropState.selections.primary;
+    primary.startX = left;
+    primary.startY = top;
+    primary.endX = right;
+    primary.endY = bottom;
+    
+    updateCropSelection();
+}
+
+function updateCropContinueState() {
+    const btnCropContinue = document.getElementById('btn-crop-continue');
+    if (!btnCropContinue) return;
+    if (!cropState.enabled) {
+        btnCropContinue.disabled = true;
+        return;
+    }
+    
+    if (cropState.mode === 'split') {
+        const primary = cropState.selections.primary;
+        const secondary = cropState.selections.secondary;
+        btnCropContinue.disabled = !(selectionHasArea(primary) && selectionHasArea(secondary));
+        return;
+    }
+    
+    const hasSelection = selectionHasArea(cropState.selections.primary);
+    btnCropContinue.disabled = !hasSelection;
+}
+
+function enableSplitCrop(twoPagesInfo) {
+    if (!currentEditingCanvas || !editorContainer) return;
+    
+    cropState.enabled = true;
+    cropState.mode = 'split';
+    cropState.splitDirection = twoPagesInfo.split_direction || null;
+    
     const cropOverlay = document.getElementById('crop-overlay');
     const btnCropClear = document.getElementById('btn-crop-clear');
     const btnCropToggle = document.getElementById('btn-crop-toggle');
+    const btnCropContinue = document.getElementById('btn-crop-continue');
+    
+    setupCropOverlayElements(cropOverlay);
+    
+    if (cropOverlay) {
+        cropOverlay.style.display = 'block';
+        cropOverlay.classList.add('active');
+    }
+    if (btnCropClear) btnCropClear.style.display = 'inline-flex';
+    if (btnCropContinue) btnCropContinue.style.display = 'inline-flex';
+    if (btnCropToggle) {
+        btnCropToggle.style.background = 'var(--primary-color)';
+        btnCropToggle.style.color = 'white';
+    }
+    
+    const primaryElement = getSelectionElement('primary');
+    const secondaryElement = getSelectionElement('secondary');
+    if (primaryElement) {
+        primaryElement.style.display = 'block';
+    }
+    if (secondaryElement) {
+        secondaryElement.style.display = 'block';
+    }
+    
+    const containerRect = editorContainer.getBoundingClientRect();
+    const canvasRect = currentEditingCanvas.getBoundingClientRect();
+    const canvasLeft = clamp(canvasRect.left - containerRect.left, 0, containerRect.width);
+    const canvasTop = clamp(canvasRect.top - containerRect.top, 0, containerRect.height);
+    const canvasRight = clamp(canvasLeft + canvasRect.width, 0, containerRect.width);
+    const canvasBottom = clamp(canvasTop + canvasRect.height, 0, containerRect.height);
+    
+    const scaleX = canvasRect.width / currentEditingCanvas.width;
+    const scaleY = canvasRect.height / currentEditingCanvas.height;
+    const splitPosition = twoPagesInfo.split_position || 0;
+    
+    if (twoPagesInfo.split_direction === 'vertical') {
+        const splitX = clamp(canvasLeft + splitPosition * scaleX, canvasLeft + 1, canvasRight - 1);
+        cropState.selections.primary = {
+            startX: canvasLeft,
+            startY: canvasTop,
+            endX: splitX,
+            endY: canvasBottom
+        };
+        cropState.selections.secondary = {
+            startX: splitX,
+            startY: canvasTop,
+            endX: canvasRight,
+            endY: canvasBottom
+        };
+    } else {
+        const splitY = clamp(canvasTop + splitPosition * scaleY, canvasTop + 1, canvasBottom - 1);
+        cropState.selections.primary = {
+            startX: canvasLeft,
+            startY: canvasTop,
+            endX: canvasRight,
+            endY: splitY
+        };
+        cropState.selections.secondary = {
+            startX: canvasLeft,
+            startY: splitY,
+            endX: canvasRight,
+            endY: canvasBottom
+        };
+    }
+    
+    updateCropSelection();
+    showMessage('Two pages detected - adjust both boxes, then click Continue', 'info');
+}
+
+function createCropOverlay() {
+    const overlay = document.createElement('div');
+    overlay.id = 'crop-overlay';
+    overlay.className = 'crop-overlay';
+    overlay.style.display = 'none';
+    
+    const primary = createCropSelectionElement('primary');
+    const secondary = createCropSelectionElement('secondary');
+    secondary.style.display = 'none';
+    
+    overlay.appendChild(primary);
+    overlay.appendChild(secondary);
+    
+    setupCropOverlayElements(overlay);
+    
+    return overlay;
+}
+
+function createCropSelectionElement(selectionKey) {
+    const selection = document.createElement('div');
+    selection.id = selectionKey === 'secondary' ? 'crop-selection-secondary' : 'crop-selection';
+    selection.className = 'crop-selection';
+    selection.dataset.selection = selectionKey;
+    
+    const handles = ['nw', 'n', 'ne', 'e', 'se', 's', 'sw', 'w'];
+    handles.forEach(handleName => {
+        const handle = document.createElement('div');
+        handle.className = `crop-handle handle-${handleName}`;
+        handle.dataset.handle = handleName;
+        selection.appendChild(handle);
+    });
+    
+    return selection;
+}
+
+function setupCropOverlayElements(overlayElement) {
+    const overlay = overlayElement || document.getElementById('crop-overlay');
+    if (!overlay) return;
+    
+    if (!overlay.dataset.listenersBound) {
+        overlay.addEventListener('mousedown', startCropDrag);
+        overlay.dataset.listenersBound = 'true';
+    }
+    
+    let primary = document.getElementById('crop-selection');
+    if (!primary) {
+        primary = createCropSelectionElement('primary');
+        overlay.appendChild(primary);
+    }
+    if (!primary.dataset.selection) {
+        primary.dataset.selection = 'primary';
+    }
+    bindSelectionEvents(primary);
+    
+    let secondary = document.getElementById('crop-selection-secondary');
+    if (!secondary) {
+        secondary = createCropSelectionElement('secondary');
+        secondary.style.display = 'none';
+        overlay.appendChild(secondary);
+    }
+    if (!secondary.dataset.selection) {
+        secondary.dataset.selection = 'secondary';
+    }
+    bindSelectionEvents(secondary);
+}
+
+function bindSelectionEvents(selection) {
+    if (!selection || selection.dataset.listenersBound) return;
+    selection.addEventListener('mousedown', startCropMove);
+    selection.querySelectorAll('.crop-handle').forEach(handle => {
+        handle.addEventListener('mousedown', (e) => startCropResize(e, handle.dataset.handle));
+    });
+    selection.dataset.listenersBound = 'true';
+}
+
+function startCropMove(e) {
+    if (!cropState.enabled || !currentEditingCanvas || !editorContainer) return;
+    if (e.target && e.target.classList.contains('crop-handle')) return;
+    
+    e.preventDefault();
+    e.stopPropagation();
+    const selectionKey = e.currentTarget?.dataset?.selection || 'primary';
+    cropState.activeSelection = selectionKey;
+    const selectionState = getSelectionState(selectionKey);
+    const left = Math.min(selectionState.startX, selectionState.endX);
+    const right = Math.max(selectionState.startX, selectionState.endX);
+    const top = Math.min(selectionState.startY, selectionState.endY);
+    const bottom = Math.max(selectionState.startY, selectionState.endY);
+    selectionState.startX = left;
+    selectionState.endX = right;
+    selectionState.startY = top;
+    selectionState.endY = bottom;
+    cropState.isDragging = true;
+    cropState.dragMode = 'move';
+    cropState.activeHandle = null;
+    
+    cropState.dragStartX = e.clientX;
+    cropState.dragStartY = e.clientY;
+    cropState.startXInitial = selectionState.startX;
+    cropState.startYInitial = selectionState.startY;
+    cropState.endXInitial = selectionState.endX;
+    cropState.endYInitial = selectionState.endY;
+}
+
+function startCropResize(e, handle) {
+    if (!cropState.enabled || !currentEditingCanvas || !editorContainer) return;
+    if (!handle) return;
+    
+    e.preventDefault();
+    e.stopPropagation();
+    const selectionKey = e.currentTarget?.parentElement?.dataset?.selection || 'primary';
+    cropState.activeSelection = selectionKey;
+    const selectionState = getSelectionState(selectionKey);
+    const left = Math.min(selectionState.startX, selectionState.endX);
+    const right = Math.max(selectionState.startX, selectionState.endX);
+    const top = Math.min(selectionState.startY, selectionState.endY);
+    const bottom = Math.max(selectionState.startY, selectionState.endY);
+    selectionState.startX = left;
+    selectionState.endX = right;
+    selectionState.startY = top;
+    selectionState.endY = bottom;
+    cropState.isDragging = true;
+    cropState.dragMode = 'resize';
+    cropState.activeHandle = handle;
+    
+    cropState.dragStartX = e.clientX;
+    cropState.dragStartY = e.clientY;
+    cropState.startXInitial = selectionState.startX;
+    cropState.startYInitial = selectionState.startY;
+    cropState.endXInitial = selectionState.endX;
+    cropState.endYInitial = selectionState.endY;
+}
+
+function toggleCrop() {
+    if (!currentEditingCanvas || !editorContainer) {
+        showMessage('Load an image before cropping', 'warning');
+        return;
+    }
+    
+    cropState.enabled = !cropState.enabled;
+    cropState.mode = 'single';
+    cropState.splitDirection = null;
+    const cropOverlay = document.getElementById('crop-overlay');
+    const btnCropClear = document.getElementById('btn-crop-clear');
+    const btnCropToggle = document.getElementById('btn-crop-toggle');
+    const btnCropContinue = document.getElementById('btn-crop-continue');
     
     if (cropState.enabled) {
         if (cropOverlay) {
@@ -704,11 +1168,14 @@ function toggleCrop() {
             cropOverlay.classList.add('active');
         }
         if (btnCropClear) btnCropClear.style.display = 'inline-flex';
+        if (btnCropContinue) btnCropContinue.style.display = 'inline-flex';
         if (btnCropToggle) {
             btnCropToggle.style.background = 'var(--primary-color)';
             btnCropToggle.style.color = 'white';
         }
-        showMessage('Crop tool enabled - Click and drag on image to select area', 'info');
+        initializeCropSelectionToCanvas();
+        updateCropContinueState();
+        showMessage('Adjust the red dotted box, then click Continue to crop', 'info');
     } else {
         if (btnCropToggle) {
             btnCropToggle.style.background = '';
@@ -720,16 +1187,31 @@ function toggleCrop() {
 
 function clearCrop() {
     cropState.enabled = false;
-    cropState.startX = 0;
-    cropState.startY = 0;
-    cropState.endX = 0;
-    cropState.endY = 0;
+    cropState.mode = 'single';
+    cropState.splitDirection = null;
+    cropState.activeSelection = 'primary';
+    cropState.selections.primary = {
+        startX: 0,
+        startY: 0,
+        endX: 0,
+        endY: 0
+    };
+    cropState.selections.secondary = {
+        startX: 0,
+        startY: 0,
+        endX: 0,
+        endY: 0
+    };
     cropState.isDragging = false;
+    cropState.dragMode = null;
+    cropState.activeHandle = null;
     
     const cropOverlay = document.getElementById('crop-overlay');
     const cropSelection = document.getElementById('crop-selection');
+    const cropSelectionSecondary = document.getElementById('crop-selection-secondary');
     const btnCropClear = document.getElementById('btn-crop-clear');
     const btnCropToggle = document.getElementById('btn-crop-toggle');
+    const btnCropContinue = document.getElementById('btn-crop-continue');
     
     if (cropOverlay) {
         cropOverlay.style.display = 'none';
@@ -741,7 +1223,15 @@ function clearCrop() {
         cropSelection.style.width = '0px';
         cropSelection.style.height = '0px';
     }
+    if (cropSelectionSecondary) {
+        cropSelectionSecondary.style.left = '0px';
+        cropSelectionSecondary.style.top = '0px';
+        cropSelectionSecondary.style.width = '0px';
+        cropSelectionSecondary.style.height = '0px';
+        cropSelectionSecondary.style.display = 'none';
+    }
     if (btnCropClear) btnCropClear.style.display = 'none';
+    if (btnCropContinue) btnCropContinue.style.display = 'none';
     if (btnCropToggle) {
         btnCropToggle.style.background = '';
         btnCropToggle.style.color = '';
@@ -750,20 +1240,32 @@ function clearCrop() {
 
 function startCropDrag(e) {
     if (!cropState.enabled || !currentEditingCanvas || !editorContainer) return;
+    if (cropState.mode === 'split') return;
+    if (e.target && e.target.id !== 'crop-overlay') return;
     
     e.preventDefault();
     e.stopPropagation();
     cropState.isDragging = true;
+    cropState.dragMode = 'select';
+    cropState.activeHandle = null;
+    cropState.activeSelection = 'primary';
     
     // Get the actual canvas position within the container
     const containerRect = editorContainer.getBoundingClientRect();
-    const canvasRect = currentEditingCanvas.getBoundingClientRect();
     
     // Calculate position relative to the container (where overlay is positioned)
-    cropState.startX = e.clientX - containerRect.left;
-    cropState.startY = e.clientY - containerRect.top;
-    cropState.endX = cropState.startX;
-    cropState.endY = cropState.startY;
+    const selectionState = cropState.selections.primary;
+    selectionState.startX = e.clientX - containerRect.left;
+    selectionState.startY = e.clientY - containerRect.top;
+    selectionState.endX = selectionState.startX;
+    selectionState.endY = selectionState.startY;
+    
+    cropState.dragStartX = e.clientX;
+    cropState.dragStartY = e.clientY;
+    cropState.startXInitial = selectionState.startX;
+    cropState.startYInitial = selectionState.startY;
+    cropState.endXInitial = selectionState.endX;
+    cropState.endYInitial = selectionState.endY;
     
     updateCropSelection();
 }
@@ -772,14 +1274,50 @@ function updateCropDrag(e) {
     if (!cropState.isDragging || !currentEditingCanvas || !editorContainer) return;
     
     const containerRect = editorContainer.getBoundingClientRect();
+    const minSize = 20;
+    const dx = e.clientX - cropState.dragStartX;
+    const dy = e.clientY - cropState.dragStartY;
+    const selectionState = getSelectionState(cropState.activeSelection);
     
-    // Calculate position relative to container
-    const x = e.clientX - containerRect.left;
-    const y = e.clientY - containerRect.top;
-    
-    // Clamp to container bounds
-    cropState.endX = Math.max(0, Math.min(containerRect.width, x));
-    cropState.endY = Math.max(0, Math.min(containerRect.height, y));
+    if (cropState.dragMode === 'move') {
+        const width = cropState.endXInitial - cropState.startXInitial;
+        const height = cropState.endYInitial - cropState.startYInitial;
+        const newStartX = clamp(cropState.startXInitial + dx, 0, containerRect.width - width);
+        const newStartY = clamp(cropState.startYInitial + dy, 0, containerRect.height - height);
+        selectionState.startX = newStartX;
+        selectionState.startY = newStartY;
+        selectionState.endX = newStartX + width;
+        selectionState.endY = newStartY + height;
+    } else if (cropState.dragMode === 'resize' && cropState.activeHandle) {
+        let left = cropState.startXInitial;
+        let right = cropState.endXInitial;
+        let top = cropState.startYInitial;
+        let bottom = cropState.endYInitial;
+        
+        if (cropState.activeHandle.includes('w')) {
+            left = clamp(cropState.startXInitial + dx, 0, right - minSize);
+        }
+        if (cropState.activeHandle.includes('e')) {
+            right = clamp(cropState.endXInitial + dx, left + minSize, containerRect.width);
+        }
+        if (cropState.activeHandle.includes('n')) {
+            top = clamp(cropState.startYInitial + dy, 0, bottom - minSize);
+        }
+        if (cropState.activeHandle.includes('s')) {
+            bottom = clamp(cropState.endYInitial + dy, top + minSize, containerRect.height);
+        }
+        
+        selectionState.startX = left;
+        selectionState.startY = top;
+        selectionState.endX = right;
+        selectionState.endY = bottom;
+    } else {
+        // Selection drag mode
+        const x = e.clientX - containerRect.left;
+        const y = e.clientY - containerRect.top;
+        selectionState.endX = clamp(x, 0, containerRect.width);
+        selectionState.endY = clamp(y, 0, containerRect.height);
+    }
     
     updateCropSelection();
 }
@@ -788,22 +1326,44 @@ function endCropDrag(e) {
     if (!cropState.isDragging) return;
     
     cropState.isDragging = false;
+    cropState.dragMode = null;
+    cropState.activeHandle = null;
     updateCropSelection();
 }
 
-function updateCropSelection() {
-    const cropSelection = document.getElementById('crop-selection');
-    if (!cropSelection || !currentEditingCanvas) return;
+function updateCropSelection(selectionKey = null) {
+    if (!currentEditingCanvas) return;
     
-    const left = Math.min(cropState.startX, cropState.endX);
-    const top = Math.min(cropState.startY, cropState.endY);
-    const width = Math.abs(cropState.endX - cropState.startX);
-    const height = Math.abs(cropState.endY - cropState.startY);
+    const updateSelectionElement = (key) => {
+        const selectionElement = getSelectionElement(key);
+        const selectionState = getSelectionState(key);
+        if (!selectionElement) return;
+        
+        const left = Math.min(selectionState.startX, selectionState.endX);
+        const top = Math.min(selectionState.startY, selectionState.endY);
+        const width = Math.abs(selectionState.endX - selectionState.startX);
+        const height = Math.abs(selectionState.endY - selectionState.startY);
+        
+        selectionElement.style.left = left + 'px';
+        selectionElement.style.top = top + 'px';
+        selectionElement.style.width = width + 'px';
+        selectionElement.style.height = height + 'px';
+    };
     
-    cropSelection.style.left = left + 'px';
-    cropSelection.style.top = top + 'px';
-    cropSelection.style.width = width + 'px';
-    cropSelection.style.height = height + 'px';
+    if (selectionKey) {
+        updateSelectionElement(selectionKey);
+    } else if (cropState.mode === 'split') {
+        updateSelectionElement('primary');
+        updateSelectionElement('secondary');
+    } else {
+        updateSelectionElement('primary');
+        const secondaryElement = getSelectionElement('secondary');
+        if (secondaryElement) {
+            secondaryElement.style.display = 'none';
+        }
+    }
+    
+    updateCropContinueState();
 }
 
 
@@ -1275,11 +1835,32 @@ function clearImagePreview() {
     // Reset crop state
     cropState = {
         enabled: false,
-        startX: 0,
-        startY: 0,
-        endX: 0,
-        endY: 0,
-        isDragging: false
+        mode: 'single',
+        splitDirection: null,
+        selections: {
+            primary: {
+                startX: 0,
+                startY: 0,
+                endX: 0,
+                endY: 0
+            },
+            secondary: {
+                startX: 0,
+                startY: 0,
+                endX: 0,
+                endY: 0
+            }
+        },
+        isDragging: false,
+        dragMode: null,
+        activeHandle: null,
+        activeSelection: 'primary',
+        dragStartX: 0,
+        dragStartY: 0,
+        startXInitial: 0,
+        startYInitial: 0,
+        endXInitial: 0,
+        endYInitial: 0
     };
 }
 

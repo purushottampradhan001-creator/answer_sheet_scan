@@ -30,6 +30,7 @@ import shutil
 import sqlite3
 from datetime import datetime
 from typing import Dict
+from PIL import Image
 
 # Use absolute imports with src.* prefix
 from src.app.config import config
@@ -812,6 +813,90 @@ def split_two_pages():
         return jsonify({
             'success': False,
             'error': f'Page splitting failed: {str(e)}'
+        }), 500
+
+
+@app.route('/split_image_with_crops', methods=['POST'])
+def split_image_with_crops():
+    """Split an image into two pages using manual crop boxes."""
+    data = request.get_json()
+    image_path = data.get('image_path')
+    crops = data.get('crops', [])
+    
+    if not image_path or not isinstance(crops, list) or len(crops) != 2:
+        return jsonify({
+            'success': False,
+            'error': 'Image path and 2 crop boxes are required'
+        }), 400
+    
+    if image_path.startswith('file://'):
+        image_path = image_path[7:]
+    image_path = os.path.normpath(image_path)
+    
+    # Validate that the path is within the scanner directory for security
+    scanner_dir_abs = os.path.abspath(config.scanner_watch_dir)
+    image_path_abs = os.path.abspath(image_path)
+    
+    if not image_path_abs.startswith(scanner_dir_abs):
+        return jsonify({
+            'success': False,
+            'error': 'Invalid image path - must be within scanner folder'
+        }), 400
+    
+    if not os.path.exists(image_path_abs):
+        return jsonify({
+            'success': False,
+            'error': 'Image file not found'
+        }), 404
+    
+    try:
+        img = Image.open(image_path_abs)
+        if img.mode != 'RGB':
+            img = img.convert('RGB')
+        width, height = img.size
+        
+        def clamp_crop(crop):
+            x = int(crop.get('x', 0))
+            y = int(crop.get('y', 0))
+            w = int(crop.get('width', 0))
+            h = int(crop.get('height', 0))
+            
+            x = max(0, min(x, width - 1))
+            y = max(0, min(y, height - 1))
+            w = max(1, min(w, width - x))
+            h = max(1, min(h, height - y))
+            return x, y, w, h
+        
+        output_dir = os.path.dirname(image_path_abs) or scanner_dir_abs
+        base_name, ext = os.path.splitext(os.path.basename(image_path_abs))
+        ext = ext if ext else '.jpg'
+        
+        output_paths = []
+        for idx, crop in enumerate(crops, start=1):
+            x, y, w, h = clamp_crop(crop)
+            cropped = img.crop((x, y, x + w, y + h))
+            output_path = os.path.join(output_dir, f"{base_name}_page{idx}{ext}")
+            if ext.lower() in ['.jpg', '.jpeg']:
+                cropped.save(output_path, quality=95, optimize=True)
+            else:
+                cropped.save(output_path)
+            output_paths.append(output_path)
+        
+        try:
+            if os.path.exists(image_path_abs):
+                os.remove(image_path_abs)
+        except Exception as delete_error:
+            logger.warning(f"Could not delete original image after split: {delete_error}")
+        
+        return jsonify({
+            'success': True,
+            'split_images': output_paths,
+            'message': 'Split into 2 pages'
+        })
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': f'Split failed: {str(e)}'
         }), 500
 
 

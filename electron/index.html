@@ -78,6 +78,9 @@
                                     <button id="btn-crop-clear" class="btn-control-small" title="Clear crop" style="display: none;">
                                         <span>✕</span> Clear
                                     </button>
+                                    <button id="btn-crop-continue" class="btn-control-small btn-primary" title="Continue to crop" style="display: none;">
+                                        <span>✓</span> Continue
+                                    </button>
                                 </div>
                                 
                                 <div class="control-actions">
@@ -102,7 +105,16 @@
                                     </div>
                                     <!-- Crop overlay -->
                                     <div id="crop-overlay" class="crop-overlay" style="display: none;">
-                                        <div id="crop-selection" class="crop-selection"></div>
+                                        <div id="crop-selection" class="crop-selection">
+                                            <div class="crop-handle handle-nw" data-handle="nw"></div>
+                                            <div class="crop-handle handle-n" data-handle="n"></div>
+                                            <div class="crop-handle handle-ne" data-handle="ne"></div>
+                                            <div class="crop-handle handle-e" data-handle="e"></div>
+                                            <div class="crop-handle handle-se" data-handle="se"></div>
+                                            <div class="crop-handle handle-s" data-handle="s"></div>
+                                            <div class="crop-handle handle-sw" data-handle="sw"></div>
+                                            <div class="crop-handle handle-w" data-handle="w"></div>
+                                        </div>
                                     </div>
                                 </div>
                                 <!-- Auto Processing Info Panel -->
