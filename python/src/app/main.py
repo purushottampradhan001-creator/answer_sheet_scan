@@ -4,7 +4,16 @@ Main Flask application entry point
 
 import sys
 import os
+import traceback
+import logging 
 
+# Set up logging - output to stderr so it's captured by Electron
+logging.basicConfig(
+    level=logging.INFO,
+    format='[%(levelname)s] %(message)s',
+    stream=sys.stderr
+)
+logger = logging.getLogger(__name__)
 # Add project root to path for imports
 # This allows 'src.*' imports to work when running the script directly
 _current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -610,11 +619,23 @@ def auto_check_image():
             'error': 'Image path is required'
         }), 400
     
+    # Normalize the path - remove file:// prefix if present, normalize separators
+    if image_path.startswith('file://'):
+        image_path = image_path[7:]  # Remove 'file://' prefix
+    # Normalize path separators for the current OS
+    image_path = os.path.normpath(image_path)
+    
     if not os.path.exists(image_path):
         return jsonify({
             'success': False,
-            'error': 'Image file not found'
+            'error': f'Image file not found: {image_path}'
         }), 404
+    
+    if not os.path.isfile(image_path):
+        return jsonify({
+            'success': False,
+            'error': f'Path is not a file: {image_path}'
+        }), 400
     
     try:
         result = auto_processor.auto_process(image_path, auto_fix=False)
@@ -623,9 +644,13 @@ def auto_check_image():
             **result
         })
     except Exception as e:
+        # Log the full traceback for debugging
+        error_traceback = traceback.format_exc()
+        logger.info(f"Error in auto_check_image: {error_traceback}", file=sys.stderr)
         return jsonify({
             'success': False,
-            'error': f'Auto check failed: {str(e)}'
+            'error': f'Auto check failed: {str(e)}',
+            'traceback': error_traceback if app.debug else None
         }), 500
 
 
@@ -642,22 +667,58 @@ def auto_process_image():
             'error': 'Image path is required'
         }), 400
     
+    # Normalize the path - remove file:// prefix if present, normalize separators
+    if image_path.startswith('file://'):
+        image_path = image_path[7:]  # Remove 'file://' prefix
+    # Normalize path separators for the current OS
+    image_path = os.path.normpath(image_path)
+    
+    if output_path:
+        if output_path.startswith('file://'):
+            output_path = output_path[7:]
+        output_path = os.path.normpath(output_path)
+    
     if not os.path.exists(image_path):
         return jsonify({
             'success': False,
-            'error': 'Image file not found'
+            'error': f'Image file not found: {image_path}'
         }), 404
+    
+    if not os.path.isfile(image_path):
+        return jsonify({
+            'success': False,
+            'error': f'Path is not a file: {image_path}'
+        }), 400
     
     try:
         result = auto_processor.auto_process(image_path, output_path=output_path, auto_fix=True)
+        deleted_original = False
+
+        # If two pages were split, remove the original image
+        split_images = result.get('split_images') or []
+        if split_images:
+            try:
+                if os.path.exists(image_path):
+                    os.remove(image_path)
+                    deleted_original = True
+            except Exception as delete_error:
+                result.setdefault('warnings', []).append(
+                    f"Could not delete original image after split: {delete_error}"
+                )
+
         return jsonify({
             'success': True,
+            'deleted_original': deleted_original,
             **result
         })
     except Exception as e:
+        # Log the full traceback for debugging
+        error_traceback = traceback.format_exc()
+        print(f"Error in auto_process_image: {error_traceback}", file=sys.stderr)
         return jsonify({
             'success': False,
-            'error': f'Auto processing failed: {str(e)}'
+            'error': f'Auto processing failed: {str(e)}',
+            'traceback': error_traceback if app.debug else None
         }), 500
 
 
@@ -695,7 +756,7 @@ def split_two_pages():
     try:
         # Detect if two pages
         two_pages_info = auto_processor.detect_two_pages(image_path)
-        
+        logger.info("two pages info",two_pages_info)
         if not two_pages_info.get('is_two_pages'):
             return jsonify({
                 'success': False,
@@ -709,21 +770,44 @@ def split_two_pages():
         else:
             output_dir = os.path.dirname(image_path)
         
+        # Detect two pages first
+        two_pages_info = auto_processor.detect_two_pages(image_path)
+
+        if not two_pages_info.get('is_two_pages'):
+            return jsonify({
+                'success': False,
+                'message': 'Single page detected. No split required.',
+                'split_info': two_pages_info
+            }), 200
+
+
+        # Ensure output directory exists
+        os.makedirs(output_dir, exist_ok=True)
+
         # Split the pages
-        split_paths = auto_processor.split_two_pages(image_path, output_dir, two_pages_info)
-        
+        split_paths = auto_processor.split_two_pages(
+            image_path=image_path,
+            output_dir=output_dir,
+            split_info=two_pages_info
+        )
+        logger.info("split paths",split_paths)
         if not split_paths:
             return jsonify({
                 'success': False,
-                'error': 'Failed to split pages'
+                'error': 'Page split failed'
             }), 500
-        
+
+
+        # Convert to relative paths / filenames for frontend
+        split_files = [os.path.basename(p) for p in split_paths]
+
         return jsonify({
             'success': True,
-            'split_images': split_paths,
+            'split_images': split_files,
             'split_info': two_pages_info,
-            'message': f'Split into {len(split_paths)} images'
-        })
+            'message': f'Split into {len(split_files)} pages'
+        }), 200
+
     except Exception as e:
         return jsonify({
             'success': False,
@@ -885,7 +969,7 @@ if __name__ == '__main__':
     
     print(f"Starting Image Engine Server on http://127.0.0.1:{config.port}")
     try:
-        app.run(host='127.0.0.1', port=config.port, debug=False)
+        app.run(host='127.0.0.1', port=config.port, debug=True)
     except KeyboardInterrupt:
         print("\nShutting down...")
         scanner_watcher.stop()

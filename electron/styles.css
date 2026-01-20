@@ -423,6 +423,169 @@ header h1 {
 .preview-container {
     display: flex;
     flex-direction: column;
+    gap: 12px;
+}
+
+/* Auto Processing Panel */
+.auto-processing-panel {
+    background: var(--surface);
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    padding: 16px;
+    margin-top: 12px;
+    max-height: 400px;
+    overflow-y: auto;
+}
+
+.auto-processing-header {
+    margin-bottom: 12px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.auto-processing-header h4 {
+    font-size: 1rem;
+    font-weight: 600;
+    color: var(--text-primary);
+    margin: 0;
+}
+
+.auto-processing-content {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.auto-processing-message {
+    padding: 8px 12px;
+    border-radius: 6px;
+    font-size: 0.875rem;
+    line-height: 1.5;
+    word-wrap: break-word;
+}
+
+.auto-processing-message.success {
+    background: #d1fae5;
+    color: #065f46;
+    border-left: 3px solid var(--success-color);
+}
+
+.auto-processing-message.warning {
+    background: #fef3c7;
+    color: #92400e;
+    border-left: 3px solid #f59e0b;
+}
+
+.auto-processing-message.info {
+    background: #dbeafe;
+    color: #1e40af;
+    border-left: 3px solid var(--primary-color);
+}
+
+.auto-processing-message.error {
+    background: #fee2e2;
+    color: #991b1b;
+    border-left: 3px solid #ef4444;
+}
+
+.auto-processing-fixes {
+    margin-top: 12px;
+    padding-top: 12px;
+    border-top: 1px solid var(--border-color);
+}
+
+.auto-processing-fixes-title {
+    font-weight: 600;
+    font-size: 0.875rem;
+    color: var(--text-primary);
+    margin-bottom: 8px;
+}
+
+.auto-processing-fix-item {
+    padding: 6px 12px;
+    background: var(--background);
+    border-radius: 4px;
+    font-size: 0.875rem;
+    margin-bottom: 4px;
+    color: var(--text-secondary);
+}
+
+.auto-processing-loading {
+    padding: 12px;
+    text-align: center;
+    color: var(--text-secondary);
+    font-size: 0.875rem;
+}
+
+.auto-processing-messages {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin-bottom: 12px;
+}
+
+.auto-processing-checks {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-bottom: 12px;
+}
+
+.auto-processing-check {
+    padding: 8px 12px;
+    border-radius: 6px;
+    font-size: 0.875rem;
+    line-height: 1.5;
+}
+
+.auto-processing-check.success {
+    background: #d1fae5;
+    color: #065f46;
+    border-left: 3px solid var(--success-color);
+}
+
+.auto-processing-check.warning {
+    background: #fef3c7;
+    color: #92400e;
+    border-left: 3px solid #f59e0b;
+}
+
+.auto-processing-check.info {
+    background: #dbeafe;
+    color: #1e40af;
+    border-left: 3px solid var(--primary-color);
+}
+
+.auto-processing-actions {
+    margin-top: 12px;
+    padding-top: 12px;
+    border-top: 1px solid var(--border-color);
+}
+
+.btn-auto-process {
+    background: var(--primary-color);
+    color: white;
+    border: none;
+    padding: 10px 20px;
+    border-radius: 6px;
+    font-size: 0.875rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: background 0.2s;
+    width: 100%;
+}
+
+.btn-auto-process:hover {
+    background: var(--primary-dark);
+}
+
+.auto-processing-error {
+    padding: 12px;
+    background: #fee2e2;
+    color: #991b1b;
+    border-radius: 6px;
+    font-size: 0.875rem;
+    border-left: 3px solid #ef4444;
 }
 
 .editor-container {

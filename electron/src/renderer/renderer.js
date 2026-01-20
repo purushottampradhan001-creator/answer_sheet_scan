@@ -44,6 +44,8 @@ let currentEditingCanvas = null;
 let currentEditingCtx = null;
 let originalImage = null;
 let scannerPollInterval = null;
+let imageAutoProcessingData = {}; // Store auto-processing data for each image
+let imageAutoProcessingApplied = new Set(); // Track which images have had auto-processing applied
 let examDetails = {
     degree: null,
     subject: null,
@@ -380,6 +382,9 @@ async function loadImageForPreview(imagePath) {
             // Reset sliders
             resetEdits();
             
+            // Display auto-processing info and run auto-processing on load
+            displayAutoProcessingInfo(imagePath);
+            
             // Clean up object URL
             URL.revokeObjectURL(imageUrl);
         };
@@ -396,6 +401,79 @@ async function loadImageForPreview(imagePath) {
         showMessage(`Error loading image: ${error.message}`, 'error');
     }
 }
+
+async function displayAutoProcessingInfo(imagePath) {
+    /**
+     * Display auto-processing information for the current image.
+     * This is called when an image is loaded for preview.
+     * 
+     * @param {string} imagePath - Path to the image
+     */
+    const panel = document.getElementById('auto-processing-panel');
+    const content = document.getElementById('auto-processing-content');
+    
+    if (!panel || !content) {
+        console.warn('Auto-processing panel elements not found');
+        return;
+    }
+    
+    // Hide auto-processing panel/messages
+    panel.style.display = 'none';
+    content.innerHTML = '';
+    
+    try {
+        const hasBeenProcessed = imageAutoProcessingApplied.has(imagePath);
+        const endpoint = hasBeenProcessed ? 'auto_check_image' : 'auto_process_image';
+
+        // Call the auto-processing endpoint (auto-check if already processed)
+        const response = await fetch(`${API_URL}/${endpoint}`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                image_path: imagePath
+            })
+        });
+        
+        if (!response.ok) {
+            throw new Error(`HTTP ${response.status}`);
+        }
+        
+        const data = await response.json();
+        
+        if (!data.success) {
+            throw new Error(data.error || 'Auto-check failed');
+        }
+        
+        // Store the processing data for this image
+        imageAutoProcessingData[imagePath] = data;
+
+        // Mark this image as processed when auto-processing was run
+        if (!hasBeenProcessed) {
+            imageAutoProcessingApplied.add(imagePath);
+        }
+
+        // If image was split, mark split images as processed too
+        if (data.split_images && data.split_images.length > 0) {
+            data.split_images.forEach(splitPath => {
+                imageAutoProcessingApplied.add(splitPath);
+            });
+
+            // Refresh gallery to remove the original and show split images
+            await loadScannedImages();
+        }
+        
+        // Do not display any auto-processing messages
+        content.innerHTML = '';
+        
+    } catch (error) {
+        console.error('Error fetching auto-processing info:', error);
+        // Suppress UI errors for auto-processing panel
+        content.innerHTML = '';
+    }
+}
+
 
 function switchTab(tabName) {
     tabButtons.forEach(btn => {
@@ -912,6 +990,18 @@ async function completeAnswerCopy() {
                         uploadedCount++;
                         console.log(`Uploaded: ${scannedImg.filename}`);
                         
+                        // Store auto-processing data for this image
+                        if (uploadData.auto_processing && uploadData.image) {
+                            imageAutoProcessingData[uploadData.image.path] = uploadData.auto_processing;
+                            
+                            // Show auto-processing messages
+                            if (uploadData.auto_processing.messages && uploadData.auto_processing.messages.length > 0) {
+                                const messages = uploadData.auto_processing.messages.join('\n');
+                                showMessage(`Auto-processing completed for ${scannedImg.filename}`, 'info');
+                                console.log('Auto-processing:', messages);
+                            }
+                        }
+                        
                         // If this is the first image and unique ID was extracted, update the form
                         if (uploadData.unique_id_extracted && uploadData.image.sequence === 1) {
                             // Reload exam details to get the extracted unique ID
@@ -1161,6 +1251,10 @@ function closePDFPreview() {
 
 function clearImagePreview() {
     // Clear the image editor/preview
+    const panel = document.getElementById('auto-processing-panel');
+    if (panel) {
+        panel.style.display = 'none';
+    }
     if (currentEditingCanvas) {
         currentEditingCanvas.remove();
         currentEditingCanvas = null;
