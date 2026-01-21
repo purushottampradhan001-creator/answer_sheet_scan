@@ -128,6 +128,7 @@ class PythonBackend {
       env: {
         ...process.env,
         PYTHONPATH: this.pythonDir
+        , PYTHONUNBUFFERED: '1'
       }
     });
 

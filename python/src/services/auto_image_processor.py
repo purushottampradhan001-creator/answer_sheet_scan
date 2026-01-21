@@ -44,6 +44,11 @@ class AutoImageProcessor:
         self.yellow_lower = np.array([20, 100, 100])
         self.yellow_upper = np.array([30, 255, 255])
 
+        # Last-run flags (best-effort) so callers can know whether a step actually did work
+        # without changing the public method signatures.
+        self._last_finger_detected = None
+        self._last_finger_removed = None
+
     # ----------------------------------------------------
     # INTERNAL SAFE HELPERS
     # ----------------------------------------------------
@@ -483,87 +488,128 @@ class AutoImageProcessor:
     # REMOVE YELLOW OBJECTS (STICKERS)
     # ----------------------------------------------------
 
-    def remove_yellow_objects(self, image_path: str, output_path: Optional[str] = None) -> str:
-        """
-        Remove yellow stickers or marks using inpainting.
-        """
-        try:
-            img = self._safe_read_cv(image_path)
-            if img is None:
-                return image_path
-
-            hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
-            mask = cv2.inRange(hsv, self.yellow_lower, self.yellow_upper)
-
-            if cv2.countNonZero(mask) == 0:
-                return image_path
-
-            kernel = np.ones((5, 5), np.uint8)
-            mask = cv2.dilate(mask, kernel, iterations=2)
-
-            result = cv2.inpaint(img, mask, 3, cv2.INPAINT_TELEA)
-
-            if output_path is None:
-                output_path = image_path
-
-            cv2.imwrite(output_path, result)
-            return output_path
-
-        except Exception as e:
-            self._log_err(f"Yellow object removal error: {e}")
-            return image_path
-
-    # ----------------------------------------------------
-    # REMOVE FINGERS (SKIN COLOR + INPAINT)
-    # ----------------------------------------------------
-
     def remove_fingers(self, image_path: str, output_path: Optional[str] = None) -> str:
         """
-        Detect and remove finger marks using skin color detection.
+        Robust finger removal for scanned documents.
+        Detects:
+        - Side fingers
+        - Top-center holding fingers (Indian skin tones)
         """
+
         try:
             img = self._safe_read_cv(image_path)
             if img is None:
+                print(f"✋ [finger] could not read: {os.path.basename(image_path)}", flush=True)
                 return image_path
 
-            hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+            h, w = img.shape[:2]
+            print(f"✋ [finger] start: {os.path.basename(image_path)} ({w}x{h})", flush=True)
 
-            lower1 = np.array([0, 20, 70])
-            upper1 = np.array([20, 255, 255])
-            lower2 = np.array([170, 20, 70])
-            upper2 = np.array([180, 255, 255])
+            # ---------- YCrCb (better than HSV for Indian skin) ----------
+            ycrcb = cv2.cvtColor(img, cv2.COLOR_BGR2YCrCb)
 
-            mask1 = cv2.inRange(hsv, lower1, upper1)
-            mask2 = cv2.inRange(hsv, lower2, upper2)
-            mask = cv2.bitwise_or(mask1, mask2)
+            lower = np.array([0, 135, 85])
+            upper = np.array([255, 180, 135])
+            skin_mask = cv2.inRange(ycrcb, lower, upper)
+            skin_px = int(np.count_nonzero(skin_mask))
+            print(f"✋ [finger] skin_mask: px={skin_px} ({(skin_px / float(h*w)):.4f})", flush=True)
 
+            # ---------- Clean mask ----------
             kernel = np.ones((3, 3), np.uint8)
-            mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
-            mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+            skin_mask = cv2.morphologyEx(skin_mask, cv2.MORPH_OPEN, kernel, 1)
+            skin_mask = cv2.morphologyEx(skin_mask, cv2.MORPH_CLOSE, kernel, 1)
 
-            contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            min_area = img.shape[0] * img.shape[1] * 0.001
+            contours, _ = cv2.findContours(
+                skin_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+            )
+            print(f"✋ [finger] contours: total={len(contours)}", flush=True)
 
-            final_mask = np.zeros_like(mask)
+            final_mask = np.zeros_like(skin_mask)
+
+            min_area_global = h * w * 0.0008   # LOWERED
+            max_area = h * w * 0.1
+
+            edge_margin = int(0.12 * min(h, w))
+            top_band = int(0.22 * h)  # BIGGER TOP ZONE
+
+            accepted = 0
             for cnt in contours:
-                if cv2.contourArea(cnt) > min_area:
-                    cv2.drawContours(final_mask, [cnt], -1, 255, -1)
+                area = cv2.contourArea(cnt)
+                if area < min_area_global or area > max_area:
+                    continue
 
-            if cv2.countNonZero(final_mask) == 0:
+                x, y, cw, ch = cv2.boundingRect(cnt)
+
+                # ---------- POSITION CHECK ----------
+                near_edge = (
+                    x < edge_margin or
+                    x + cw > w - edge_margin or
+                    y + ch > h - edge_margin
+                )
+
+                in_top_center = (
+                    y < top_band and
+                    x > w * 0.2 and
+                    x + cw < w * 0.8
+                )
+
+                if not (near_edge or in_top_center):
+                    continue
+
+                # ---------- SHAPE (RELAXED) ----------
+                aspect_ratio = max(cw / (ch + 1e-6), ch / (cw + 1e-6))
+                if aspect_ratio < 1.1:  # relaxed
+                    continue
+
+                hull = cv2.convexHull(cnt)
+                hull_area = cv2.contourArea(hull)
+                if hull_area == 0:
+                    continue
+
+                solidity = area / hull_area
+                if solidity < 0.45:  # relaxed
+                    continue
+
+                # ---------- TEXT SAFETY (SOFT) ----------
+                roi = img[y:y+ch, x:x+cw]
+                gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+                edge_ratio = np.count_nonzero(
+                    cv2.Canny(gray, 60, 140)
+                ) / gray.size
+
+                if edge_ratio > 0.18:  # allow some writing overlap
+                    continue
+
+                # ✅ ACCEPT AS FINGER
+                cv2.drawContours(final_mask, [cnt], -1, 255, -1)
+                accepted += 1
+
+            mask_px = int(cv2.countNonZero(final_mask))
+            print(f"✋ [finger] accepted={accepted} mask_px={mask_px}", flush=True)
+            if mask_px == 0:
+                # IMPORTANT: explicit message for debugging
+                print(f"✋ [finger] not detected: {os.path.basename(image_path)} (mask empty)", flush=True)
+                self._log_err("Finger not detected: mask empty")
                 return image_path
 
-            final_mask = cv2.dilate(final_mask, np.ones((5, 5), np.uint8), iterations=1)
+            final_mask = cv2.dilate(
+                final_mask, np.ones((9, 9), np.uint8), iterations=1
+            )
+
             result = cv2.inpaint(img, final_mask, 3, cv2.INPAINT_TELEA)
 
             if output_path is None:
                 output_path = image_path
 
             cv2.imwrite(output_path, result)
+            print(f"✋ [finger] removed -> {os.path.basename(output_path)}", flush=True)
             return output_path
 
         except Exception as e:
             self._log_err(f"Finger removal error: {e}")
+            print(f"✋ [finger] error: {e}", flush=True)
             return image_path
+
     # ----------------------------------------------------
     # LINE ORIENTATION DETECTION (FALLBACK)
     # ----------------------------------------------------
@@ -843,7 +889,7 @@ class AutoImageProcessor:
 
             # ---- Remove fingers ----
             processed_img = self.remove_fingers(processed_img, output_path)
-            if processed_img == output_path:
+            if getattr(self, "_last_finger_removed", False):
                 result['fixes_applied'].append('removed_fingers')
                 messages.append("✋ Removed finger marks")
 

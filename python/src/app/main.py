@@ -92,6 +92,21 @@ def auto_process_uploaded_image(image_path: str) -> Dict:
         # Run auto processing with all checks and fixes
         # Messages are already built in auto_process function
         auto_result = auto_processor.auto_process(image_path, auto_fix=True)
+        # Debug print so backend console shows the "answer" (processing outcome)
+        try:
+            print(
+                f"🧾 [auto_process_uploaded_image] {os.path.basename(image_path)} "
+                f"-> processed={os.path.basename(auto_result.get('processed_image_path', '') or '')} "
+                f"fixes={auto_result.get('fixes_applied', [])} "
+                f"warnings={len(auto_result.get('warnings', []) or [])} "
+                f"needs_attention={bool(auto_result.get('needs_attention'))}"
+                , flush=True
+            )
+            msgs = auto_result.get('messages') or []
+            if msgs:
+                print("🧾 [auto_process_uploaded_image] messages:", " | ".join(map(str, msgs)), flush=True)
+        except Exception:
+            pass
         return auto_result
     except Exception as e:
         return {
@@ -694,6 +709,19 @@ def auto_check_image():
     
     try:
         result = auto_processor.auto_process(image_path, auto_fix=False)
+        # Debug print so backend console shows the "answer" (check results)
+        try:
+            print(
+                f"🧾 [auto_check_image] {os.path.basename(image_path)} "
+                f"needs_attention={bool(result.get('needs_attention'))} "
+                f"warnings={len(result.get('warnings', []) or [])}"
+                , flush=True
+            )
+            msgs = result.get('messages') or []
+            if msgs:
+                print("🧾 [auto_check_image] messages:", " | ".join(map(str, msgs)), flush=True)
+        except Exception:
+            pass
         return jsonify({
             'success': True,
             **result
@@ -748,6 +776,23 @@ def auto_process_image():
     try:
         result = auto_processor.auto_process(image_path, output_path=output_path, auto_fix=True)
         deleted_original = False
+
+        # Debug print so backend console shows the "answer" (full processing outcome)
+        try:
+            print(
+                f"🧾 [auto_process_image] {os.path.basename(image_path)} "
+                f"-> processed={os.path.basename(result.get('processed_image_path', '') or '')} "
+                f"split_images={len(result.get('split_images', []) or [])} "
+                f"fixes={result.get('fixes_applied', [])} "
+                f"warnings={len(result.get('warnings', []) or [])} "
+                f"needs_attention={bool(result.get('needs_attention'))}"
+                , flush=True
+            )
+            msgs = result.get('messages') or []
+            if msgs:
+                print("🧾 [auto_process_image] messages:", " | ".join(map(str, msgs)), flush=True)
+        except Exception:
+            pass
 
         # If two pages were split, remove the original image
         split_images = result.get('split_images') or []

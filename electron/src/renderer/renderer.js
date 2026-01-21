@@ -47,6 +47,7 @@ let originalImage = null;
 let scannerPollInterval = null;
 let imageAutoProcessingData = {}; // Store auto-processing data for each image
 let imageAutoProcessingApplied = new Set(); // Track which images have had auto-processing applied
+let imageFingerRemovalApplied = new Set(); // Track which images have had finger removal applied
 let examDetails = {
     degree: null,
     subject: null,
@@ -454,6 +455,30 @@ async function displayAutoProcessingInfo(imagePath) {
     content.innerHTML = '';
     
     try {
+        if (!imageFingerRemovalApplied.has(imagePath)) {
+            const fingerResponse = await fetch(`${API_URL}/remove_fingers`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    image_path: imagePath,
+                    output_path: imagePath
+                })
+            });
+
+            if (fingerResponse.ok) {
+                const fingerData = await fingerResponse.json();
+                if (fingerData.success) {
+                    imageFingerRemovalApplied.add(imagePath);
+                    imageCacheBusters.set(imagePath, Date.now());
+                    updateScannedGallery();
+                    await loadImageForPreview(imagePath);
+                    return;
+                }
+            }
+        }
+
         const hasBeenProcessed = imageAutoProcessingApplied.has(imagePath);
         
         const checkResponse = await fetch(`${API_URL}/auto_check_image`, {
