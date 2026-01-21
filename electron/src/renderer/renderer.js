@@ -412,8 +412,8 @@ async function loadImageForPreview(imagePath) {
             setupCropOverlayElements(existingOverlay);
             editorControls.style.display = 'block';
             
-            // Reset sliders
-            resetEdits();
+            // Reset sliders (silent on auto-load; don't spam "All edits reset")
+            resetEdits({ showToast: false });
             
             // Display auto-processing info and run auto-processing on load
             displayAutoProcessingInfo(imagePath);
@@ -503,6 +503,16 @@ async function displayAutoProcessingInfo(imagePath) {
         
         // Store the processing data for this image
         imageAutoProcessingData[imagePath] = checkData;
+
+        // If blur detected, show ONLY the rescan message in UI and stop here.
+        const blurInfo = checkData.checks?.blur;
+        if (blurInfo?.is_blurry) {
+            const msg = 'Your image is blurry, please re-scan.';
+            showMessage(msg, 'warning');
+            panel.style.display = 'block';
+            content.textContent = msg;
+            return;
+        }
         
         const twoPagesInfo = checkData.checks?.two_pages;
         if (twoPagesInfo && twoPagesInfo.is_two_pages) {
@@ -666,7 +676,11 @@ function updateEditorPreview() {
     ctx.restore();
 }
 
-function resetEdits() {
+function resetEdits(options = {}) {
+    // If called as an event handler (button click), `options` will be an Event.
+    if (options instanceof Event) options = {};
+    const showToast = options.showToast !== false;
+
     if (!rotateSlider || !brightnessSlider || !contrastSlider) return;
     
     rotateSlider.value = 0;
@@ -683,7 +697,9 @@ function resetEdits() {
     }
     
     updateEditorPreview();
-    showMessage('All edits reset', 'info');
+    if (showToast) {
+        showMessage('All edits reset', 'info');
+    }
 }
 
 async function applyEdits() {
@@ -1625,6 +1641,12 @@ async function completeAnswerCopy() {
                                 const messages = uploadData.auto_processing.messages.join('\n');
                                 showMessage(`Auto-processing completed for ${scannedImg.filename}`, 'info');
                                 console.log('Auto-processing:', messages);
+                            }
+
+                            // If blur detected, surface rescan message clearly in UI
+                            const blurInfo = uploadData.auto_processing.checks?.blur;
+                            if (blurInfo?.is_blurry) {
+                                showMessage('Your image is blurry, please re-scan.', 'warning');
                             }
                         }
                         

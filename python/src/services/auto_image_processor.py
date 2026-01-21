@@ -122,11 +122,16 @@ class AutoImageProcessor:
 
     def check_blur(self, image_path: str) -> Dict:
         """
-        Check if image is blurry using Laplacian variance.
+        Advanced blur detection:
+        - Detects defocus blur
+        - Detects motion blur (camera shake)
+        - Works for handwritten exam copies
         """
+
         try:
             img = self._safe_read_cv(image_path)
             if img is None:
+                print(f"🔍 [blur] could not read: {os.path.basename(image_path)}", flush=True)
                 return {
                     'is_blurry': True,
                     'blur_score': 0.0,
@@ -135,25 +140,63 @@ class AutoImageProcessor:
                 }
 
             gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+            h, w = gray.shape[:2]
+            print(f"🔍 [blur] start: {os.path.basename(image_path)} ({w}x{h})", flush=True)
+
+            # -------- 1. Laplacian (defocus blur) --------
             lap_var = float(cv2.Laplacian(gray, cv2.CV_64F).var())
 
-            is_blurry = lap_var < self.blur_threshold
-            needs_improvement = lap_var < (self.blur_threshold * 1.5)
+            # -------- 2. Tenengrad (gradient energy) --------
+            gx = cv2.Sobel(gray, cv2.CV_64F, 1, 0, ksize=3)
+            gy = cv2.Sobel(gray, cv2.CV_64F, 0, 1, ksize=3)
+            tenengrad = float(np.mean(gx**2 + gy**2))
+
+            # -------- 3. Edge density (text clarity) --------
+            edges = cv2.Canny(gray, 80, 160)
+            edge_density = np.count_nonzero(edges) / edges.size
+            print(
+                f"🔍 [blur] metrics: laplacian={lap_var:.2f}, tenengrad={tenengrad:.2f}, edge_density={edge_density:.4f}",
+                flush=True
+            )
+
+            # -------- Thresholds (tuned for exam scans) --------
+            is_defocus_blur = lap_var < 90
+            is_motion_blur = tenengrad < 120
+            poor_text = edge_density < 0.015
+
+            is_blurry = is_defocus_blur or is_motion_blur or poor_text
+
+            blur_score = round(
+                (lap_var * 0.4 + tenengrad * 0.6), 2
+            )
+
+            needs_improvement = blur_score < 150
+            print(
+                f"🔍 [blur] flags: defocus={is_defocus_blur}, motion={is_motion_blur}, poor_text={poor_text} "
+                f"-> is_blurry={bool(is_blurry)} blur_score={blur_score} needs_improvement={bool(needs_improvement)}",
+                flush=True
+            )
 
             return {
                 'is_blurry': bool(is_blurry),
-                'blur_score': round(lap_var, 2),
+                'blur_score': blur_score,
                 'needs_improvement': bool(needs_improvement),
-                'threshold': self.blur_threshold
+                'metrics': {
+                    'laplacian': round(lap_var, 2),
+                    'tenengrad': round(tenengrad, 2),
+                    'edge_density': round(edge_density, 4)
+                }
             }
 
         except Exception as e:
+            print(f"🔍 [blur] error: {e}", flush=True)
             return {
                 'is_blurry': True,
                 'blur_score': 0.0,
                 'needs_improvement': True,
                 'error': str(e)
             }
+
 
     # ----------------------------------------------------
     # CUT / EDGE DETECTION
@@ -499,6 +542,9 @@ class AutoImageProcessor:
         try:
             img = self._safe_read_cv(image_path)
             if img is None:
+                # Track outcome for callers
+                self._last_finger_detected = None
+                self._last_finger_removed = None
                 print(f"✋ [finger] could not read: {os.path.basename(image_path)}", flush=True)
                 return image_path
 
@@ -590,6 +636,8 @@ class AutoImageProcessor:
                 # IMPORTANT: explicit message for debugging
                 print(f"✋ [finger] not detected: {os.path.basename(image_path)} (mask empty)", flush=True)
                 self._log_err("Finger not detected: mask empty")
+                self._last_finger_detected = False
+                self._last_finger_removed = False
                 return image_path
 
             final_mask = cv2.dilate(
@@ -602,12 +650,16 @@ class AutoImageProcessor:
                 output_path = image_path
 
             cv2.imwrite(output_path, result)
+            self._last_finger_detected = True
+            self._last_finger_removed = True
             print(f"✋ [finger] removed -> {os.path.basename(output_path)}", flush=True)
             return output_path
 
         except Exception as e:
             self._log_err(f"Finger removal error: {e}")
             print(f"✋ [finger] error: {e}", flush=True)
+            self._last_finger_detected = None
+            self._last_finger_removed = None
             return image_path
 
     # ----------------------------------------------------
@@ -814,73 +866,40 @@ class AutoImageProcessor:
 
         # ---------------- RUN CHECKS ----------------
         blur_check = self.check_blur(image_path)
+        # If blur is detected, return ONLY one message and stop further processing.
+        # Also ensures we don't do heavier work like border detection/object removal.
+        result['checks']['blur'] = blur_check
+        if blur_check.get('is_blurry'):
+            result['needs_attention'] = True
+            result['warnings'].append('Image is blurry, please re-scan')
+            result['messages'] = ["⚠️ Image is blurry, please re-scan."]
+            result['processed_image_path'] = image_path
+            return result
+
         cut_check = self.check_cut_edges(image_path)
         border_check = self.detect_borders(image_path)
 
-        base_name = os.path.splitext(os.path.basename(image_path))[0]
-        is_split_child = base_name.endswith('_page1') or base_name.endswith('_page2')
+        # Two-page detection/splitting is intentionally disabled in auto_process().
+        # Use the dedicated /split_two_pages endpoint when needed.
+        two_pages_check = {
+            'is_two_pages': False,
+            'split_direction': None,
+            'split_position': None,
+            'confidence': 0.0,
+            'note': 'Two-page detection/splitting disabled in auto_process'
+        }
 
-        if is_split_child:
-            two_pages_check = {
-                'is_two_pages': False,
-                'split_direction': None,
-                'split_position': None,
-                'confidence': 0.0,
-                'note': 'Skipping two-page detection for split image'
-            }
-        else:
-            two_pages_check = self.detect_two_pages(image_path)
-
-        result['checks']['blur'] = blur_check
         result['checks']['cut_edges'] = cut_check
         result['checks']['borders'] = border_check
         result['checks']['two_pages'] = two_pages_check
 
         # ---------------- WARNINGS ----------------
-        if blur_check.get('is_blurry'):
-            result['needs_attention'] = True
-            result['warnings'].append('Image quality is not good')
-            messages.append(
-                f"⚠️ Image is blurry (score: {blur_check.get('blur_score', 0)})"
-            )
-
-        if two_pages_check.get('is_two_pages'):
-            result['needs_attention'] = True
-            result['warnings'].append('Two pages detected in one scan')
-            messages.append(
-                f"⚠️ Two pages detected ({two_pages_check.get('split_direction')}, "
-                f"confidence: {two_pages_check.get('confidence', 0):.2f})"
-            )
-        else:
-            messages.append("✅ Single page detected")
+        # Blur handled above as a hard-stop; no two-page warnings here (disabled).
 
         # ---------------- AUTO FIXES ----------------
         processed_img = image_path
 
         if auto_fix:
-            # ---- Split two pages ----
-            if two_pages_check.get('is_two_pages'):
-                try:
-                    output_dir = os.path.dirname(image_path) or os.getcwd()
-                    split_paths = self.split_two_pages(
-                        image_path, output_dir, two_pages_check
-                    )
-
-                    if len(split_paths) == 2:
-                        result['split_images'] = split_paths
-                        result['fixes_applied'].append('split_two_pages')
-                        messages.append(
-                            f"✂️ Split into: {os.path.basename(split_paths[0])}, "
-                            f"{os.path.basename(split_paths[1])}"
-                        )
-                    else:
-                        result['warnings'].append('Could not split pages')
-                        messages.append("❌ Failed to split pages")
-
-                except Exception as e:
-                    self._log_err(str(e))
-                    result['warnings'].append('Split failed')
-
             # ---- Remove yellow objects ----
             processed_img = self.remove_yellow_objects(processed_img, output_path)
             if processed_img == output_path:
