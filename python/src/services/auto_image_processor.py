@@ -204,58 +204,91 @@ class AutoImageProcessor:
 
     def check_cut_edges(self, image_path: str) -> Dict:
         """
-        Detect if page is cut on any side.
+        Detect if the page is cut on any side.
+        Reliable for handwritten exam copies.
         """
+
         try:
             img = self._safe_read_cv(image_path)
             if img is None:
-                return {'is_cut': True, 'cut_sides': ['all']}
+                print(f"✂️ [cut] could not read: {os.path.basename(image_path)}", flush=True)
+                return {
+                    'is_cut': True,
+                    'cut_sides': ['unknown'],
+                    'error': 'Cannot read image'
+                }
 
             gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
             h, w = gray.shape
+            print(f"✂️ [cut] start: {os.path.basename(image_path)} ({w}x{h})", flush=True)
 
+            # Edge detection
             edges = cv2.Canny(gray, 80, 160)
 
-            margin = max(5, int(min(h, w) * self.edge_margin_threshold))
+            margin = max(10, int(min(h, w) * 0.05))  # 5%
+            print(f"✂️ [cut] margin_px={margin}", flush=True)
 
-            def edge_density(region):
-                total = region.size
-                return float(np.count_nonzero(region)) / total if total else 0.0
+            def edge_ratio(region):
+                return np.count_nonzero(region) / region.size
 
-            top = edge_density(edges[:margin, :])
-            bottom = edge_density(edges[-margin:, :])
-            left = edge_density(edges[:, :margin])
-            right = edge_density(edges[:, -margin:])
+            def white_ratio(region):
+                return np.count_nonzero(region > 240) / region.size
 
-            edge_threshold = 0.01
+            sides = {
+                'top': gray[:margin, :],
+                'bottom': gray[h - margin:h, :],
+                'left': gray[:, :margin],
+                'right': gray[:, w - margin:w]
+            }
+
+            edge_maps = {
+                'top': edges[:margin, :],
+                'bottom': edges[h - margin:h, :],
+                'left': edges[:, :margin],
+                'right': edges[:, w - margin:w]
+            }
+
             cut_sides = []
 
-            if top < edge_threshold:
-                cut_sides.append('top')
-            if bottom < edge_threshold:
-                cut_sides.append('bottom')
-            if left < edge_threshold:
-                cut_sides.append('left')
-            if right < edge_threshold:
-                cut_sides.append('right')
+            for side in sides:
+                e_ratio = edge_ratio(edge_maps[side])
+                w_ratio = white_ratio(sides[side])
+
+                # If margin is NOT white enough and has edges → likely cut
+                if w_ratio < 0.55 and e_ratio > 0.02:
+                    cut_sides.append(side)
+
+            metrics = {
+                side: {
+                    'edge_ratio': round(edge_ratio(edge_maps[side]), 4),
+                    'white_ratio': round(white_ratio(sides[side]), 4)
+                }
+                for side in sides
+            }
+            print(
+                "✂️ [cut] metrics: "
+                + ", ".join(
+                    f"{s}(edge={metrics[s]['edge_ratio']}, white={metrics[s]['white_ratio']})"
+                    for s in ('top', 'bottom', 'left', 'right')
+                )
+                + f" -> cut_sides={cut_sides}",
+                flush=True
+            )
 
             return {
                 'is_cut': bool(cut_sides),
                 'cut_sides': cut_sides,
-                'edge_margins': {
-                    'top': round(top, 4),
-                    'bottom': round(bottom, 4),
-                    'left': round(left, 4),
-                    'right': round(right, 4)
-                }
+                'metrics': metrics
             }
 
         except Exception as e:
+            print(f"✂️ [cut] error: {e}", flush=True)
             return {
                 'is_cut': True,
                 'cut_sides': ['unknown'],
                 'error': str(e)
             }
+
     # ----------------------------------------------------
     # BORDER DETECTION
     # ----------------------------------------------------
@@ -530,6 +563,46 @@ class AutoImageProcessor:
     # ----------------------------------------------------
     # REMOVE YELLOW OBJECTS (STICKERS)
     # ----------------------------------------------------
+
+    def remove_yellow_objects(self, image_path: str, output_path: Optional[str] = None) -> str:
+        """
+        Remove yellow stickers/objects from image using inpainting.
+        """
+        try:
+            img = self._safe_read_cv(image_path)
+            if img is None:
+                print(f"🟡 [yellow] could not read: {os.path.basename(image_path)}", flush=True)
+                return image_path
+
+            # Convert to HSV for better color detection
+            hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+
+            # Create mask for yellow objects
+            mask = cv2.inRange(hsv, self.yellow_lower, self.yellow_upper)
+            mask_px = int(np.count_nonzero(mask))
+            if mask_px == 0:
+                return image_path
+
+            # Dilate mask to cover edges
+            kernel = np.ones((5, 5), np.uint8)
+            mask = cv2.dilate(mask, kernel, iterations=2)
+
+            # Inpaint
+            result = cv2.inpaint(img, mask, 3, cv2.INPAINT_TELEA)
+
+            if output_path is None:
+                output_path = image_path
+
+            cv2.imwrite(output_path, result)
+            print(
+                f"🟡 [yellow] removed: {os.path.basename(image_path)} (mask_px={mask_px}) -> {os.path.basename(output_path)}",
+                flush=True
+            )
+            return output_path
+
+        except Exception as e:
+            self._log_err(f"Yellow object removal error: {e}")
+            return image_path
 
     def remove_fingers(self, image_path: str, output_path: Optional[str] = None) -> str:
         """
