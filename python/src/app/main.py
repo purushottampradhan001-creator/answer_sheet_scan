@@ -542,6 +542,60 @@ def delete_scanner_image():
         }), 500
 
 
+@app.route('/apply_scanner_image_edits', methods=['POST'])
+def apply_scanner_image_edits():
+    """Apply edits directly to an image in the scanner_input folder."""
+    data = request.get_json()
+    image_path = data.get('image_path')
+    edits = data.get('edits', {})
+
+    if not image_path:
+        return jsonify({
+            'success': False,
+            'error': 'Image path is required'
+        }), 400
+
+    # Normalize the path - remove file:// prefix if present, normalize separators
+    if image_path.startswith('file://'):
+        image_path = image_path[7:]
+    image_path = os.path.normpath(image_path)
+
+    # Validate that the path is within the scanner directory for security
+    scanner_dir_abs = os.path.abspath(config.scanner_watch_dir)
+    image_path_abs = os.path.abspath(image_path)
+
+    if not image_path_abs.startswith(scanner_dir_abs):
+        return jsonify({
+            'success': False,
+            'error': 'Invalid image path - must be within scanner folder'
+        }), 400
+
+    if not os.path.exists(image_path_abs):
+        return jsonify({
+            'success': False,
+            'error': 'Image file not found'
+        }), 404
+
+    if not os.path.isfile(image_path_abs):
+        return jsonify({
+            'success': False,
+            'error': 'Path is not a file'
+        }), 400
+
+    try:
+        edited_path = apply_edits(image_path_abs, edits, output_path=image_path_abs)
+        return jsonify({
+            'success': True,
+            'message': 'Edits applied',
+            'image_path': edited_path
+        })
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+
 @app.route('/apply_image_edits', methods=['POST'])
 def apply_image_edits_endpoint():
     """Apply edits to an image."""

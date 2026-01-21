@@ -568,10 +568,9 @@ class AutoImageProcessor:
     # LINE ORIENTATION DETECTION (FALLBACK)
     # ----------------------------------------------------
 
-    def _detect_line_orientation(self, image: Image.Image) -> Optional[str]:
+    def _get_line_orientation_scores(self, image: Image.Image) -> Tuple[int, int]:
         """
-        Detect dominant line orientation.
-        Returns 'horizontal', 'vertical', or None.
+        Return counts of (horizontal_lines, vertical_lines).
         """
         try:
             img = np.array(image)
@@ -592,7 +591,7 @@ class AutoImageProcessor:
             )
 
             if lines is None:
-                return None
+                return 0, 0
 
             horiz = 0
             vert = 0
@@ -608,6 +607,18 @@ class AutoImageProcessor:
                 elif angle > 75:
                     vert += 1
 
+            return horiz, vert
+
+        except Exception:
+            return 0, 0
+
+    def _detect_line_orientation(self, image: Image.Image) -> Optional[str]:
+        """
+        Detect dominant line orientation.
+        Returns 'horizontal', 'vertical', or None.
+        """
+        try:
+            horiz, vert = self._get_line_orientation_scores(image)
             if horiz == 0 and vert == 0:
                 return None
             if vert > horiz * 1.3:
@@ -615,7 +626,6 @@ class AutoImageProcessor:
             if horiz > vert * 1.3:
                 return 'horizontal'
             return None
-
         except Exception:
             return None
 
@@ -669,8 +679,26 @@ class AutoImageProcessor:
                 # Fallback line-based detection
                 orientation = self._detect_line_orientation(rotated_img)
                 if orientation == 'vertical':
-                    rotated_img = rotated_img.rotate(-90, expand=True)
-                    rotated = True
+                    # Try both directions and pick the one that yields more horizontal lines.
+                    ccw = rotated_img.rotate(90, expand=True)
+                    cw = rotated_img.rotate(-90, expand=True)
+                    ccw_h, ccw_v = self._get_line_orientation_scores(ccw)
+                    cw_h, cw_v = self._get_line_orientation_scores(cw)
+
+                    if ccw_h > cw_h:
+                        rotated_img = ccw
+                        rotated = True
+                    elif cw_h > ccw_h:
+                        rotated_img = cw
+                        rotated = True
+                    else:
+                        # If tie, prefer orientation with fewer vertical lines
+                        if ccw_v < cw_v:
+                            rotated_img = ccw
+                            rotated = True
+                        elif cw_v < ccw_v:
+                            rotated_img = cw
+                            rotated = True
 
             if not rotated:
                 img.close()

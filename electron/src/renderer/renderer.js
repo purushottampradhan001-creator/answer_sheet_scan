@@ -38,6 +38,7 @@ const btnSaveImage = document.getElementById('btn-save-image');
 let currentAnswerCopyId = null;
 let currentImages = [];
 let scannedImages = [];
+const imageCacheBusters = new Map();
 let selectedImageIndex = -1;
 let currentEditingImage = null;
 let currentEditingCanvas = null;
@@ -281,17 +282,20 @@ function updateScannedGallery() {
         return;
     }
     
-    scannedGallery.innerHTML = scannedImages.map((img, index) => `
+    scannedGallery.innerHTML = scannedImages.map((img, index) => {
+        const cacheBust = imageCacheBusters.get(img.path);
+        const src = `file://${img.path.replace(/\\/g, '/')}${cacheBust ? `?v=${cacheBust}` : ''}`;
+        return `
         <div class="scanned-gallery-item ${index === selectedImageIndex ? 'selected' : ''}" 
              onclick="selectScannedImage(${index})">
-            <img src="file://${img.path.replace(/\\/g, '/')}" alt="${img.filename}" 
+            <img src="${src}" alt="${img.filename}" 
                  onerror="this.src='data:image/svg+xml,%3Csvg xmlns=\\'http://www.w3.org/2000/svg\\' width=\\'200\\' height=\\'150\\'%3E%3Crect fill=\\'%23ddd\\' width=\\'200\\' height=\\'150\\'/%3E%3Ctext x=\\'50%25\\' y=\\'50%25\\' text-anchor=\\'middle\\' dy=\\'.3em\\' fill=\\'%23999\\'%3EImage%3C/text%3E%3C/svg%3E'">
             <div class="scanned-gallery-item-info">${img.filename}</div>
             <button class="scanned-gallery-item-delete" onclick="event.stopPropagation(); deleteScannedImage(${index})" title="Delete image">
                 ×
             </button>
         </div>
-    `).join('');
+    `}).join('');
 }
 
 async function selectScannedImage(index) {
@@ -664,14 +668,51 @@ async function applyEdits() {
     }
     
     try {
-        // Apply all edits to the canvas first
-        updateEditorPreview();
-        
-        const cropResult = await applyCropSelection();
-        if (cropResult === null) {
-            showMessage('Edits applied successfully', 'success');
+        if (cropState.mode === 'split') {
+            await applySplitCropSelections();
+            return;
         }
-        
+
+        const rotateDegrees = parseInt(rotateSlider.value, 10) || 0;
+        const brightnessFactor = (parseInt(brightnessSlider.value, 10) || 100) / 100;
+        const contrastFactor = (parseInt(contrastSlider.value, 10) || 100) / 100;
+
+        const edits = {};
+        if (rotateDegrees !== 0) edits.rotate = rotateDegrees;
+        if (brightnessFactor !== 1) edits.brightness = brightnessFactor;
+        if (contrastFactor !== 1) edits.contrast = contrastFactor;
+
+        // Apply crop only when no rotation is requested to avoid coord mismatch.
+        if (rotateDegrees === 0 && cropState.enabled && selectionHasArea(cropState.selections.primary)) {
+            const crop = computeCropCoordsFromSelection(cropState.selections.primary);
+            if (crop) edits.crop = crop;
+        }
+
+        if (Object.keys(edits).length === 0) {
+            showMessage('No edits to apply', 'info');
+            return;
+        }
+
+        const response = await fetch(`${API_URL}/apply_scanner_image_edits`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                image_path: currentEditingImage,
+                edits
+            })
+        });
+
+        const data = await response.json();
+        if (!data.success) {
+            throw new Error(data.error || 'Failed to apply edits');
+        }
+
+        imageCacheBusters.set(currentEditingImage, Date.now());
+        updateScannedGallery();
+        showMessage('Edits applied successfully', 'success');
+        await loadImageForPreview(currentEditingImage);
     } catch (error) {
         showMessage(`Error applying edits: ${error.message}`, 'error');
         console.error('Apply edits error:', error);
